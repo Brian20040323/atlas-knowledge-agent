@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# IDE / OS
+.idea/
+.vscode/
+.cursor/
+.DS_Store
+Thumbs.db
+
+# Data & logs (keep structure, drop runtime/secrets)
+data/*.db
+data/uploads/*
+!data/uploads/.gitkeep
+data/_*
+*.log
+
+# Local media / scratch exports
+*.m4a
+*.wav
+
+# Node (if added later)
+node_modules/
+frontend/dist/
+.next/

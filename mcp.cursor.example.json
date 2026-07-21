@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "C:\\Users\\czy2004\\Desktop\\AI 全栈开发\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\czy2004\\Desktop\\AI 全栈开发\\scripts\\mcp_server.py"
+      ]
+    }
+  }
+}

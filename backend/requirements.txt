@@ -1,0 +1,27 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+httpx==0.28.1
+pydantic==2.11.3
+pydantic-settings==2.8.1
+python-dotenv==1.1.0
+sse-starlette==2.2.1
+tzdata==2025.2
+sqlalchemy==2.0.40
+aiosqlite==0.21.0
+pypdf==5.4.0
+python-multipart==0.0.20
+python-docx>=1.1.0
+openpyxl>=3.1.0
+python-pptx>=1.0.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+pypdfium2>=4.30.0
+duckduckgo-search==8.1.1
+ddgs>=9.0.0
+# Optional local voice clone / STT
+# coqui-tts>=0.25.0
+# pypinyin>=0.51.0
+# soundfile>=0.12.0
+faster-whisper>=1.0.0
+# Optional neural embeddings (P3 default uses zero-dep hash or remote openai)
+# sentence-transformers>=3.0.0

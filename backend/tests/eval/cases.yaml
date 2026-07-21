@@ -1,0 +1,933 @@
+# Atlas agent golden cases — routing + retrieval + citation + limits (P1)
+# + observability (P2) + optional vector (P3) + optional graph (P4)
+# + T1 policy goldens (企业制度问答：命中 / 引用 / 缺失拒绝)
+cases:
+  - id: agent_roadmap
+    query: agent开发需要学习哪些知识
+    expected_intent: local
+    must_hit_title_any: ["Agent", "agent", "知识地图"]
+    forbid_phrases: ["【直接回答】", "本轮使用了联网检索"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_match_any: ["document_id="]
+
+  - id: citation_refs
+    query: Agent 开发知识地图包含什么
+    expected_intent: local
+    must_hit_title_any: ["Agent", "agent", "知识地图"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_match_any: ["document_id="]
+    forbid_phrases: ["【依据】", "【直接回答】"]
+
+  - id: empty_result_answer
+    query: 完全虚构冷门词条ZXQWERTY999不存在于库
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "补充", "记住：", "自主学习", "联网"]
+    forbid_phrases: ["【直接回答】"]
+
+  # --- T1 制度金标准（垂直场景：差旅报销）---
+  - id: policy_reimburse_cap
+    category: hit
+    query: 差旅住宿费上限是多少？
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_contain_all: ["500"]
+    must_answer_match_any: ["document_id="]
+    forbid_phrases: ["【直接回答】", "本轮使用了联网检索"]
+    notes: "种子文档《差旅报销制度》须含住宿费上限 500 元/晚"
+
+  - id: policy_reimburse_citation
+    category: hit
+    query: 差旅报销需要哪些附件？
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_contain_all: ["发票"]
+    must_answer_match_any: ["document_id="]
+    forbid_phrases: ["【依据】", "【直接回答】"]
+    notes: "有据作答：附件条款须可追溯 document_id"
+
+  - id: policy_missing_medical
+    category: missing
+    query: 完全虚构制度条款ZXQMED999股权激励行权税率是多少
+    expected_intent: local
+    expect_max_hits: 0
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以", "补充", "记住："]
+    must_answer_contain_all: ["不能凭推测"]
+    forbid_phrases: ["【直接回答】", "一般为", "通常是", "估计", "本轮使用了联网检索"]
+    notes: "T2：制度缺失须 local 拒绝，禁止自动 research/web"
+
+  - id: policy_empty_stays_local
+    category: missing
+    query: 本公司年假最长可休几天ZXQLEAVE001
+    expected_intent: local
+    expect_max_hits: 0
+    must_not_plan_step: research_topics
+    must_answer_contain_any: ["不足以", "不能凭推测"]
+    forbid_phrases: ["一般为", "通常是", "估计"]
+    notes: "T2：考勤/年假类空库不得转 research"
+
+  - id: policy_no_auto_web
+    category: missing
+    query: 考勤迟到罚款标准是多少ZXQATT001
+    expected_intent: local
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以"]
+    forbid_phrases: ["本轮使用了联网检索"]
+    notes: "T2：制度意图下 steps 不得含 web_search"
+
+  # --- T3 题库扩充（五大类，目标 ~50）---
+  - id: hit_fastapi
+    category: hit
+    query: FastAPI 适合做什么
+    expected_intent: local
+    must_hit_title_any: ["FastAPI"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_match_any: ["document_id="]
+
+  - id: hit_rag
+    category: hit
+    query: 什么是 RAG 检索增强
+    expected_intent: local
+    must_hit_title_any: ["RAG"]
+    must_answer_contain_any: ["**参考**", "检索"]
+    must_answer_match_any: ["document_id="]
+
+  - id: hit_langgraph
+    category: hit
+    query: LangGraph 是什么框架
+    expected_intent: local
+    must_hit_title_any: ["LangGraph"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_match_any: ["document_id="]
+
+  - id: hit_memory
+    category: hit
+    query: Agent 的记忆与状态有什么用
+    expected_intent: local
+    must_hit_title_any: ["记忆"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_match_any: ["document_id="]
+
+  - id: hit_policy_flight
+    category: hit
+    query: 差旅报销机票经济舱能否实报实销
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["**参考**", "经济舱"]
+    must_answer_match_any: ["document_id="]
+
+  - id: hit_policy_over_limit
+    category: hit
+    query: 差旅超标准住宿怎么处理
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["**参考**", "审批"]
+    must_answer_match_any: ["document_id="]
+
+  - id: multi_turn_policy_flight
+    category: multi_turn
+    query: 差旅报销里机票的报销标准是什么
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["经济舱", "**参考**"]
+    notes: "多轮近似：追问机票时查询已带主题"
+
+  - id: multi_turn_policy_attach
+    category: multi_turn
+    query: 继续问差旅报销还需要准备哪些附件材料
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["发票"]
+    notes: "多轮近似：带主题的追问"
+
+  - id: ambiguous_reimburse_cap
+    category: ambiguous
+    query: 差旅报销上限是多少
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500", "**参考**"]
+    notes: "歧义补全主题词后落到已入库差旅制度"
+
+  - id: missing_zxq_alpha
+    category: missing
+    query: 完全虚构冷门词条ZXQALPHA001不存在
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以"]
+    forbid_phrases: ["【直接回答】"]
+
+  - id: missing_zxq_beta
+    category: missing
+    query: 完全虚构冷门词条ZXQBETA002不存在于库
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "补充"]
+
+  - id: missing_policy_housing
+    category: missing
+    query: 本公司住房补贴每月多少ZXQHOUSE001
+    expected_intent: local
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以", "不能凭推测"]
+    forbid_phrases: ["一般为", "通常是"]
+
+  - id: missing_policy_ot
+    category: missing
+    query: 加班费计算公式在哪份制度ZXQOT001
+    expected_intent: local
+    must_not_plan_step: research_topics
+    must_answer_contain_any: ["不足以"]
+
+  - id: missing_policy_social
+    category: missing
+    query: 公积金缴存比例是多少ZXQSOCIAL001
+    expected_intent: local
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以"]
+    forbid_phrases: ["估计"]
+
+  - id: oos_poem
+    category: oos
+    query: 写一首关于春天的诗
+    expected_intent: research
+    must_plan_step: research_topics
+    notes: "超范围：不走制度 LOCAL；允许 research，但不得伪称制度"
+
+  - id: oos_other_company
+    category: oos
+    query: 腾讯年假最长可休几天ZXQTENC001
+    expected_intent: local
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以", "不能凭推测"]
+    forbid_phrases: ["一般为"]
+    notes: "外司/未入库假期：制度路径拒绝，不编造"
+
+  - id: oos_stock_market
+    category: oos
+    query: 今天股市怎么样ZXQSTOCK001
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "补充", "联网"]
+    notes: "非制度超范围；空库拒答或引导补充"
+
+  - id: tool_time_now
+    category: tool
+    query: 现在时间是什么时候
+    expected_intent: tool_time
+    must_plan_step: get_current_time
+
+  - id: tool_calc_mul
+    category: tool
+    query: 计算 25*4
+    expected_intent: tool_calc
+    must_plan_step: calculator
+
+  - id: tool_learn_policy
+    category: tool
+    query: 记住：考勤制度样例|迟到三次书面警告
+    expected_intent: learn
+
+  - id: tool_web_explicit
+    category: tool
+    query: 联网：什么是 HTTP
+    expected_intent: web
+    must_plan_step: web_search
+
+  - id: tool_auto_learn_topic
+    category: tool
+    query: 自主学习：勾股定理
+    expected_intent: auto_learn
+    must_plan_step: research_topics
+
+  - id: degrade_mock_citation
+    category: degrade
+    query: Agent 开发要学什么
+    expected_intent: local
+    must_hit_title_any: ["Agent", "知识地图"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_match_any: ["document_id="]
+    notes: "降级路径：Mock 综合仍须有引用"
+
+  - id: degrade_empty_non_policy
+    category: degrade
+    query: 完全虚构主题ZXQDEG001请介绍
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以"]
+    forbid_phrases: ["【直接回答】"]
+
+  - id: hit_policy_scope
+    category: hit
+    query: 差旅报销制度适用于谁
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["正式员工", "**参考**"]
+
+  # --- T4 优化回归：rewrite 前会漏召的问法 ---
+  - id: rewrite_policy_flight
+    category: hit
+    query: 差旅机票怎么报销
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["**参考**", "经济舱"]
+    must_answer_match_any: ["document_id="]
+    notes: "T4：query rewrite 应补全差旅报销主题"
+
+  - id: rewrite_ambiguous_cap
+    category: ambiguous
+    query: 报销上限是多少
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500"]
+    notes: "T4：报销上限 → 差旅报销 上限"
+
+  # --- T4-3 多轮槽位（严格补完 T4 轮次）---
+  - id: multi_turn_slot_flight
+    category: multi_turn
+    history_user: 差旅住宿费上限是多少？
+    history_assistant: 根据《差旅报销制度》，住宿费上限为 500 元/晚。
+    query: 那机票呢？
+    expected_intent: local
+    must_enriched_contain: 差旅报销
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["经济舱", "**参考**"]
+    notes: "T4-3：槽位保留差旅报销，追问机票改写后检索"
+
+  - id: multi_turn_slot_attach
+    category: multi_turn
+    history_user: 差旅机票怎么报销
+    history_assistant: 依据《差旅报销制度》，机票经济舱实报实销。
+    query: 还需要哪些附件？
+    expected_intent: local
+    must_enriched_contain: 差旅报销
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["发票"]
+    notes: "T4-3：追问附件仍锚定差旅制度"
+
+  # --- T3b 题库增强至 ~100（开发逻辑下一轮）---
+  - id: hit_agent_tools
+    category: hit
+    query: Agent 开发知识地图里工具与 MCP 指什么
+    expected_intent: local
+    must_hit_title_any: ["Agent", "知识地图"]
+    must_answer_contain_any: ["**参考**", "MCP"]
+    must_answer_match_any: ["document_id="]
+
+  - id: hit_agent_eval
+    category: hit
+    query: Agent 开发为什么要做评测与可观测性
+    expected_intent: local
+    must_hit_title_any: ["Agent", "知识地图"]
+    must_answer_contain_any: ["评测", "**参考**"]
+
+  - id: hit_rag_hallucination
+    category: hit
+    query: RAG 如何减少幻觉
+    expected_intent: local
+    must_hit_title_any: ["RAG"]
+    must_answer_contain_any: ["检索", "**参考**"]
+
+  - id: hit_fastapi_async
+    category: hit
+    query: FastAPI 为什么适合 LLM 应用后端
+    expected_intent: local
+    must_hit_title_any: ["FastAPI"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_match_any: ["document_id="]
+
+  - id: hit_langgraph_state
+    category: hit
+    query: LangGraph 怎样管理有状态工作流
+    expected_intent: local
+    must_hit_title_any: ["LangGraph"]
+    must_answer_contain_any: ["**参考**", "状态"]
+
+  - id: hit_memory_short_long
+    category: hit
+    query: 短期记忆和长期记忆有什么区别
+    expected_intent: local
+    must_hit_title_any: ["记忆"]
+    must_answer_contain_any: ["**参考**"]
+
+  - id: hit_policy_invoice
+    category: hit
+    query: 差旅报销发票是否必须提供
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["发票", "**参考**"]
+
+  - id: hit_policy_approval
+    category: hit
+    query: 差旅超标准需要谁审批
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["审批", "**参考**"]
+
+  - id: hit_policy_itinerary
+    category: hit
+    query: 差旅报销行程单要不要交
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["行程单", "**参考**"]
+
+  - id: hit_policy_domestic
+    category: hit
+    query: 差旅报销制度是否只覆盖境内差旅
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["境内", "**参考**"]
+
+  - id: multi_turn_slot_cap
+    category: multi_turn
+    history_user: 差旅报销需要哪些附件？
+    history_assistant: 依据《差旅报销制度》，须附发票、行程单与审批单。
+    query: 那住宿上限呢？
+    expected_intent: local
+    must_enriched_contain: 差旅报销
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500"]
+
+  - id: multi_turn_slot_over
+    category: multi_turn
+    history_user: 差旅住宿费上限是多少？
+    history_assistant: 《差旅报销制度》写明住宿费上限 500 元/晚。
+    query: 超了怎么办？
+    expected_intent: local
+    must_enriched_contain: 差旅报销
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["审批"]
+
+  - id: multi_turn_slot_who
+    category: multi_turn
+    history_user: 差旅机票经济舱能否实报实销
+    history_assistant: 可以，依据《差旅报销制度》机票经济舱实报实销。
+    query: 这制度适用于谁？
+    expected_intent: local
+    must_enriched_contain: 差旅报销
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["正式员工"]
+
+  - id: multi_turn_rag_follow
+    category: multi_turn
+    history_user: 什么是 RAG 检索增强
+    history_assistant: RAG 先检索知识库再生成，减少幻觉。
+    query: 那幻觉怎么减少？
+    expected_intent: local
+    must_hit_title_any: ["RAG"]
+    must_answer_contain_any: ["**参考**"]
+
+  - id: multi_turn_agent_follow
+    category: multi_turn
+    history_user: agent开发需要学习哪些知识
+    history_assistant: 包括 Tool Calling、RAG、评测与可观测性等。
+    query: 那评测呢？
+    expected_intent: local
+    must_hit_title_any: ["Agent", "知识地图"]
+    must_answer_contain_any: ["**参考**"]
+
+  - id: ambiguous_policy_attach
+    category: ambiguous
+    query: 报销要交什么材料
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["发票"]
+
+  - id: ambiguous_policy_flight
+    category: ambiguous
+    query: 机票怎么报
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["经济舱"]
+
+  - id: ambiguous_stay
+    category: ambiguous
+    query: 差旅住宿标准是多少
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500"]
+
+  - id: ambiguous_agent_map
+    category: ambiguous
+    query: 知识地图包含什么
+    expected_intent: local
+    must_hit_title_any: ["Agent", "知识地图"]
+    must_answer_contain_any: ["**参考**"]
+
+  - id: missing_zxq_gamma
+    category: missing
+    query: 完全虚构冷门词条ZXQGAMMA003不存在
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以"]
+
+  - id: missing_zxq_delta
+    category: missing
+    query: 完全虚构冷门词条ZXQDELTA004请说明
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "补充"]
+
+  - id: missing_zxq_epsilon
+    category: missing
+    query: ZXQEPS005未知条目是什么
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以"]
+
+  - id: missing_policy_bonus
+    category: missing
+    query: 本公司年终奖发放规则ZXQBONUS001
+    expected_intent: local
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以", "不能凭推测"]
+
+  - id: missing_policy_remote
+    category: missing
+    query: 远程办公补贴标准ZXQREMOTE001是多少
+    expected_intent: local
+    must_not_plan_step: research_topics
+    must_answer_contain_any: ["不足以"]
+
+  - id: missing_policy_visa
+    category: missing
+    query: 出差签证费用能否报销ZXQVISA001
+    expected_intent: local
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以"]
+
+  - id: missing_policy_meal
+    category: missing
+    query: 误餐补助每天多少ZXQMEAL001
+    expected_intent: local
+    must_answer_contain_any: ["不足以"]
+    forbid_phrases: ["一般为"]
+
+  - id: missing_policy_phone
+    category: missing
+    query: 通讯费报销额度ZXQPHONE001
+    expected_intent: local
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以"]
+
+  - id: oos_joke
+    category: oos
+    query: 讲个笑话ZXQJOKE001
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "补充"]
+
+  - id: oos_weather
+    category: oos
+    query: 明天北京天气如何ZXQWEATHER001
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以"]
+
+  - id: oos_baidu_leave
+    category: oos
+    query: 外司某厂年假政策ZXQBD001有几天
+    expected_intent: local
+    must_not_plan_step: web_search
+    must_answer_contain_any: ["不足以", "不能凭推测"]
+
+  - id: oos_recipe
+    category: oos
+    query: 红烧肉怎么做ZXQFOOD001
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以"]
+
+  - id: oos_translate
+    category: oos
+    query: 把 hello 翻译成法语ZXQLANG001
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "补充"]
+
+  - id: tool_time_alt
+    category: tool
+    query: 请问现在几点
+    expected_intent: tool_time
+    must_plan_step: get_current_time
+
+  - id: tool_calc_div
+    category: tool
+    query: 计算 100/4
+    expected_intent: tool_calc
+    must_plan_step: calculator
+
+  - id: tool_calc_add
+    category: tool
+    query: 算一下 7+8
+    expected_intent: tool_calc
+    must_plan_step: calculator
+
+  - id: tool_learn_rag
+    category: tool
+    query: 记住：评测笔记|命中率与拒绝率都要记基线
+    expected_intent: learn
+
+  - id: tool_web_news
+    category: tool
+    query: 联网：OpenAI 是什么
+    expected_intent: web
+    must_plan_step: web_search
+
+  - id: tool_auto_learn_math
+    category: tool
+    query: 自主学习：牛顿定律
+    expected_intent: auto_learn
+    must_plan_step: research_topics
+
+  - id: tool_web_forced_alt
+    category: tool
+    query: 搜索：什么是 REST
+    expected_intent: web
+    must_plan_step: web_search
+
+  - id: degrade_citation_rag
+    category: degrade
+    query: RAG检索增强是什么意思
+    expected_intent: local
+    must_hit_title_any: ["RAG"]
+    must_answer_contain_any: ["**参考**"]
+    must_answer_match_any: ["document_id="]
+
+  - id: degrade_citation_fastapi
+    category: degrade
+    query: 介绍一下 FastAPI
+    expected_intent: local
+    must_hit_title_any: ["FastAPI"]
+    must_answer_contain_any: ["**参考**"]
+
+  - id: degrade_empty_zxq
+    category: degrade
+    query: 完全虚构主题ZXQDEG002请概述
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以"]
+    forbid_phrases: ["【直接回答】"]
+
+  - id: degrade_policy_refuse_tone
+    category: degrade
+    query: 未入库调休折现规则ZXQLEAVE002
+    expected_intent: local
+    must_answer_contain_any: ["不足以", "不能凭推测"]
+    forbid_phrases: ["一般为", "通常是"]
+
+  - id: hit_policy_written
+    category: hit
+    query: 差旅超标准要不要书面说明
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["书面", "**参考**"]
+
+  - id: hit_memory_checkpoint
+    category: hit
+    query: 记忆与状态里检查点有什么用
+    expected_intent: local
+    must_hit_title_any: ["记忆"]
+    must_answer_contain_any: ["**参考**"]
+
+  - id: web_forced
+    category: tool
+    query: 联网：Python 是什么
+    expected_intent: web
+    must_plan_step: web_search
+
+  - id: auto_learn
+    category: tool
+    query: 自主学习：工业革命
+    expected_intent: auto_learn
+    must_plan_step: research_topics
+
+  - id: time_tool
+    category: tool
+    query: 现在几点了
+    expected_intent: tool_time
+    must_plan_step: get_current_time
+
+  - id: calc_tool
+    category: tool
+    query: 计算 12+30
+    expected_intent: tool_calc
+    must_plan_step: calculator
+
+  - id: learn_intent
+    category: tool
+    query: 记住：测试条目|这是一条评测用知识
+    expected_intent: learn
+
+  - id: upload_oversize_limit
+    category: degrade
+    check: upload_limit
+
+  - id: doc_oversize_limit
+    category: degrade
+    check: doc_limit
+
+  - id: circuit_breaker
+    category: degrade
+    check: circuit_breaker
+
+  - id: concurrency_limit
+    category: degrade
+    check: concurrency_limit
+
+  - id: timeout_settings
+    category: degrade
+    check: timeout_settings
+
+  - id: prompt_versions_defined
+    category: degrade
+    check: prompt_versions
+
+  - id: retrieve_spans
+    category: degrade
+    check: retrieve_spans
+
+  - id: vector_default_off
+    category: degrade
+    check: vector_default_off
+
+  - id: vector_on_hash_recall
+    category: degrade
+    check: vector_on_hash_recall
+
+  - id: graph_default_off
+    category: degrade
+    check: graph_default_off
+
+  - id: graph_disabled_no_impact
+    category: degrade
+    check: graph_disabled_no_impact
+
+  - id: graph_on_extract_query
+    category: degrade
+    check: graph_on_extract_query
+
+  - id: graph_failure_fallback
+    category: degrade
+    check: graph_failure_fallback
+
+  # --- 业务口语坏例沉淀（同义：酒店/房费/出差/行程单…）---
+  - id: colloquial_hotel_cap
+    category: hit
+    query: 酒店一晚能报多少
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500", "**参考**"]
+    notes: "口语：酒店→住宿费"
+
+  - id: colloquial_trip_hotel_quota
+    category: hit
+    query: 出差住酒店有没有额度
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500", "**参考**"]
+    notes: "口语：出差→差旅；酒店→住宿费"
+
+  - id: colloquial_room_fee
+    category: ambiguous
+    query: 房费标准是多少
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500"]
+    notes: "口语：房费→住宿费"
+
+  - id: colloquial_hotel_limit
+    category: hit
+    query: 差旅住酒店上限
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500", "**参考**"]
+
+  - id: colloquial_plane_cabin
+    category: hit
+    query: 坐飞机能报商务舱吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["经济舱", "**参考**"]
+    notes: "口语：坐飞机→机票；制度为经济舱"
+
+  - id: colloquial_itinerary
+    category: hit
+    query: 行程单必须交吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["行程单", "**参考**"]
+    notes: "附件口语：行程单单独提问"
+
+  - id: colloquial_approval_form
+    category: hit
+    query: 审批单要不要
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["审批单", "**参考**"]
+
+  - id: colloquial_domestic_only
+    category: hit
+    query: 出差只能报境内吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["境内", "**参考**"]
+
+  - id: colloquial_policy_stay
+    category: hit
+    query: 公司差旅政策住宿
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500", "**参考**"]
+    notes: "政策→制度；住宿→住宿费"
+
+  - id: colloquial_expense_how
+    category: hit
+    query: 出差费用报销规定
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["**参考**"]
+
+  - id: colloquial_attach_invoice
+    category: hit
+    query: 差旅要附发票吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["发票", "**参考**"]
+
+  - id: multi_turn_slot_over_limit
+    category: multi_turn
+    history_user: 差旅住宿费上限是多少？
+    history_assistant: 根据《差旅报销制度》，住宿费上限为 500 元/晚。
+    query: 那超标怎么办？
+    expected_intent: local
+    must_enriched_contain: 差旅报销
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["书面说明", "**参考**"]
+    notes: "多轮：超标处理锚定差旅制度"
+
+  # --- 第二批口语坏例：宾馆/舱等/材料 + 库外费用拒答 ---
+  - id: colloquial_inn_cap
+    category: hit
+    query: 住宾馆一晚最多报多少
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500", "**参考**"]
+    notes: "宾馆→住宿费"
+
+  - id: colloquial_inn_quota
+    category: hit
+    query: 差旅住宾馆有限额吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["500", "**参考**"]
+
+  - id: colloquial_first_class
+    category: hit
+    query: 头等舱能报吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["经济舱", "**参考**"]
+
+  - id: colloquial_business_reimburse
+    category: hit
+    query: 商务舱可以报销吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["经济舱", "**参考**"]
+
+  - id: colloquial_need_invoice
+    category: ambiguous
+    query: 报销要不要发票
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["发票", "**参考**"]
+
+  - id: colloquial_materials
+    category: hit
+    query: 差旅交什么材料
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["发票", "**参考**"]
+
+  - id: colloquial_docs_list
+    category: hit
+    query: 出差要带哪些单据
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["发票", "**参考**"]
+
+  - id: colloquial_over_500
+    category: hit
+    query: 超过500怎么办
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["书面说明", "**参考**"]
+    notes: "超过500→住宿超标准"
+
+  - id: colloquial_temp_worker
+    category: hit
+    query: 临时工能报差旅吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["正式员工", "**参考**"]
+    notes: "适用范围：仅正式员工"
+
+  - id: colloquial_outsource
+    category: hit
+    query: 外包能报差旅吗
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_any: ["正式员工", "**参考**"]
+
+  - id: missing_travel_allowance
+    category: missing
+    query: 差旅补贴多少钱ZXQALLOW001
+    expected_intent: local
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "暂无", "补充"]
+    forbid_phrases: ["一般为", "通常是", "估计", "本轮使用了联网检索"]
+
+  - id: missing_taxi_fare
+    category: missing
+    query: 打车费能报吗ZXQTAXI001
+    expected_intent: local
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "暂无", "补充"]
+    forbid_phrases: ["本轮使用了联网检索"]
+
+  - id: missing_high_speed_rail
+    category: missing
+    query: 高铁票怎么报销ZXQRAIL001
+    expected_intent: local
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "暂无", "补充"]
+    forbid_phrases: ["本轮使用了联网检索"]
+
+  - id: missing_meal_std
+    category: missing
+    query: 餐费有没有标准ZXQMEAL002
+    expected_intent: local
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "暂无", "补充"]
+    forbid_phrases: ["一般为", "通常是", "本轮使用了联网检索"]
+
+  # --- T8 OpenClaw 协作补强：闲聊分流 / 短问澄清 ---
+  - id: chitchat_hello
+    category: chitchat
+    query: 你好
+    expected_intent: chitchat
+    must_answer_contain_any: ["Atlas", "制度", "知识"]
+    forbid_phrases: ["不足以", "本轮使用了联网检索", "【直接回答】"]
+    notes: "闲聊不得走 research/空库拒答"
+
+  - id: chitchat_hello_repeat
+    category: chitchat
+    query: 你好你好
+    expected_intent: chitchat
+    must_answer_contain_any: ["Atlas", "助手"]
+    forbid_phrases: ["不足以", "本轮使用了联网检索"]
+
+  - id: chitchat_thanks
+    category: chitchat
+    query: 谢谢
+    expected_intent: chitchat
+    must_answer_contain_any: ["不客气"]
+    forbid_phrases: ["不足以"]
+
+  - id: clarify_salary_short
+    category: clarify
+    query: 薪资
+    expected_intent: clarify
+    must_answer_contain_any: ["哪一块", "基本工资", "绩效"]
+    forbid_phrases: ["不足以", "本轮使用了联网检索", "500"]
+    notes: "短问澄清：不编制度数字"

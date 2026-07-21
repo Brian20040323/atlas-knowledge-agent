@@ -1,0 +1,27 @@
+# Optional CI gate: run Atlas knowledge-base eval cases
+name: eval
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  run-eval:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Run eval
+        run: python scripts/run_eval.py
+        env:
+          MOCK_MODE: "true"
+          RAG_VECTOR_ENABLED: "false"
+          RAG_GRAPH_ENABLED: "false"
