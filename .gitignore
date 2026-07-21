@@ -30,3 +30,6 @@ data/voice/*
 node_modules/
 frontend/dist/
 .next/
+
+# CI workflow requires GitHub token 'workflow' scope; keep local / re-add later
+.github/workflows/
