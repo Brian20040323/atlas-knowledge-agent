@@ -32,4 +32,12 @@ frontend/dist/
 .next/
 
 # CI workflow requires GitHub token 'workflow' scope; keep local / re-add later
-.github/workflows/
+# .github/workflows/ (tracked for CI)
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+data/app.db
