@@ -23,6 +23,8 @@ data/_*
 # Local media / scratch exports
 *.m4a
 *.wav
+data/voice/*
+!data/voice/.gitkeep
 
 # Node (if added later)
 node_modules/
