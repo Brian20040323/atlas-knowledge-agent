@@ -12,15 +12,42 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     use_tools: bool = True
-    deep_think: bool = True
+    deep_think: bool = False
     conversation_id: Optional[int] = None
+    # Composer 附件：优先从这些知识库文档取证（不改变全局库，仅本轮加权）
+    document_ids: Optional[List[int]] = None
+
+
+class AuthRegisterRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=32)
+    password: str = Field(..., min_length=6, max_length=128)
+    display_name: str = Field(default="", max_length=100)
+    invite_code: str = Field(default="", max_length=64)
+
+
+class AuthLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=32)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+
+
+class AuthMeResponse(BaseModel):
+    auth_required: bool
+    user: Optional[UserOut] = None
+    register_open: bool = True
+
 
 
 class HealthResponse(BaseModel):
     status: str
     mode: str
     model: str
-    base_url: str
+    model_complex: str = ""
     tts_provider: str = "browser"
     tts_ready: bool = False
     stt_provider: str = "none"

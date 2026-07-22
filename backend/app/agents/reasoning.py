@@ -107,7 +107,20 @@ def _extract_ordered_from_best_hit(
 ) -> list[tuple[str, str]]:
     if not hits:
         return []
-    best = hits[0]
+    # Prefer the hit that actually contains answer cues (e.g. 经济舱), not FAQ question-only chunks
+    boost_keys: list[str] = []
+    if any(k in question for k in ("机票", "舱", "飞机")):
+        boost_keys.extend(["经济舱", "机票", "实报实销"])
+    if any(k in question for k in ("住宿", "房费", "酒店", "宾馆")):
+        boost_keys.extend(["住宿费", "500", "上限"])
+    if any(k in question for k in ("附件", "材料", "单据", "发票")):
+        boost_keys.extend(["发票", "行程单", "审批单"])
+
+    def _hit_rank(h: dict[str, Any]) -> float:
+        text = _hit_text(h)
+        return float(h.get("score") or 0) + sum(4.0 for b in boost_keys if b in text)
+
+    best = max(hits[:5], key=_hit_rank)
     # Web snippets: keep as whole paragraphs, don't split markdown menus
     if best.get("source_type") == "web" or str(best.get("source") or "").startswith("http"):
         return []
@@ -152,6 +165,9 @@ def _extract_ordered_from_best_hit(
                 overlap += 3
         # Penalize weak 「标准」 hit that only comes from 「超标准」 when asking lodging cap
         if "标准" in question and "超标准" in p and "住宿" in question and "住宿费" not in p:
+            overlap = max(0, overlap - 2)
+        # Prefer concrete answers over FAQ question stems
+        if p.strip().startswith("Q") and "？" in p and not any(b in p for b in boosts if b != "机票"):
             overlap = max(0, overlap - 2)
         scored.append((overlap, title, p))
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -620,7 +636,115 @@ def split_thinking_response(text: str) -> tuple[str, str]:
     answer_match = re.search(r"<answer>(.*?)</answer>", text, re.DOTALL | re.IGNORECASE)
     thinking = thinking_match.group(1).strip() if thinking_match else ""
     answer = answer_match.group(1).strip() if answer_match else text.strip()
-    return thinking, answer
+    return thinking, sanitize_assistant_text(answer)
+
+
+def sanitize_assistant_text(text: str) -> str:
+    """Strip leaked tool-call markup (DeepSeek DSML / XML) so users never see raw invoke blocks."""
+    if not text:
+        return ""
+    t = str(text)
+    # DeepSeek DSML (incl. spaced forms like `< | DSML | invoke ...>`)
+    t = re.sub(
+        r"<\s*\|\s*DSML\s*\|[\s\S]*?(?:</\s*\|\s*DSML\s*\|?>|$)",
+        " ",
+        t,
+        flags=re.I,
+    )
+    t = re.sub(r"<\|?\s*DSML\s*\|?>[\s\S]*?(?:</\|?\s*DSML\s*\|?>|$)", " ", t, flags=re.I)
+    t = re.sub(r"</?\s*\|\s*DSML\s*\|[^>\n]*>", " ", t, flags=re.I)
+    t = re.sub(r"</?\|?\s*DSML\s*\|?[^>\n]*>", " ", t, flags=re.I)
+    # DeepSeek / Qwen style: <tool_calls> ... </tool_calls> or bare tool_calls blocks
+    t = re.sub(r"<tool_calls?>[\s\S]*?</tool_calls?>", " ", t, flags=re.I)
+    t = re.sub(r"</?tool_calls?>", " ", t, flags=re.I)
+    t = re.sub(r"<tool_call>[\s\S]*?</tool_call>", " ", t, flags=re.I)
+    t = re.sub(r"<function_call>[\s\S]*?</function_call>", " ", t, flags=re.I)
+    t = re.sub(
+        r"(?is)<tool_calls?>[\s\S]*?(?:name\s*=\s*\"[^\"]+\"[\s\S]*)?(?:</tool_calls?>|$)",
+        " ",
+        t,
+    )
+    t = re.sub(r"(?im)^\s*tool_calls?\s*$", " ", t)
+    t = re.sub(r"invoke\s+name\s*=\s*\"[^\"]+\"", " ", t, flags=re.I)
+    t = re.sub(r"parameter\s+name\s*=\s*\"[^\"]+\"[^>\n]*>", " ", t, flags=re.I)
+    t = re.sub(r"</\s*\|\s*DSML\s*\|?\s*parameter>", " ", t, flags=re.I)
+    t = re.sub(r"</\|?\s*DSML\s*\|?\s*parameter>", " ", t, flags=re.I)
+    t = re.sub(r'name\s*=\s*"(?:web_search|search_knowledge|research_topics)"', " ", t, flags=re.I)
+    t = re.sub(r'(?:max_results|fetch_top|top_k)\s*=\s*"?\d+"?', " ", t, flags=re.I)
+    # Fenced source / tool schema dumps
+    t = re.sub(
+        r"```(?:python|json|xml|dsml|typescript|javascript)?\s*[\s\S]*?(?:invoke\s+name|search_knowledge|DSML|tool_calls|web_search)[\s\S]*?```",
+        " ",
+        t,
+        flags=re.I,
+    )
+    # Truncated stream: drop unfinished tool markup to end of string
+    t = re.sub(r"<\s*\|\s*[\s\S]*$", "", t)
+    t = re.sub(r"<tool_calls?[\s\S]*$", "", t, flags=re.I)
+    t = re.sub(r"invoke\s+name\s*=[\s\S]*$", "", t, flags=re.I)
+    t = re.sub(r"parameter\s+name\s*=[\s\S]*$", "", t, flags=re.I)
+    if "search_knowledge" in t.lower() and ("top_k" in t.lower() or "parameter" in t.lower()):
+        t = re.sub(r"(?i)search_knowledge[\s\S]{0,400}", " ", t)
+    if "web_search" in t.lower() and ("max_results" in t.lower() or "query=" in t.lower()):
+        t = re.sub(r"(?is)web_search[\s\S]{0,500}", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    compact = re.sub(r"\s+", "", t)
+    if not compact or (
+        len(compact) < 40
+        and any(
+            k in t.lower()
+            for k in ("search_knowledge", "web_search", "top_k", "invoke", "parameter name", "dsml", "tool_calls")
+        )
+    ):
+        return ""
+    return t
+
+
+def looks_like_tool_leak(text: str) -> bool:
+    """True when the model dumped tool-call syntax instead of an answer."""
+    if not text:
+        return False
+    low = text.lower()
+    markers = (
+        "<|dsml|",
+        "<| dsml",
+        "< | dsml",
+        "invoke name=",
+        "parameter name=",
+        "<tool_call>",
+        "<tool_calls>",
+        "search_knowledge",
+        "web_search",
+        'name="web_search"',
+        "max_results=",
+    )
+    hits = sum(1 for m in markers if m in low)
+    if hits >= 2:
+        return True
+    if "dsml" in low and ("invoke" in low or "parameter" in low):
+        return True
+    if "tool_calls" in low and ("web_search" in low or "search_knowledge" in low):
+        return True
+    return False
+
+
+def honest_web_empty_reply(query: str) -> str:
+    """Honest user-facing reply when open-web search returned zero usable hits."""
+    q = (query or "").strip() or "该主题"
+    return (
+        f"联网检索未找到与「{q}」相关的可靠公开结果，材料不足，"
+        "暂时无法给出具体办学/机构细节或未核实的数据。"
+        "你可以补充城市、全称或官网链接后再问。"
+    )
+
+
+def policy_no_evidence_reply(query: str) -> str:
+    """User-facing refuse when KB has no matching policy material."""
+    q = (query or "").strip() or "该问题"
+    return (
+        f"知识库里没有与「{q}」直接对应的制度材料，因此无法给出可依据的办理说明。"
+        "请补充相关制度文档后再问，或联系人事/行政确认正式流程。"
+    )
 
 
 def synthesize_degraded_rich(

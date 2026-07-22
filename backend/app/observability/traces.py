@@ -112,14 +112,29 @@ def remember_run(payload: dict[str, Any]) -> None:
     del _RECENT[_max_recent() :]
 
 
-def list_recent_runs(limit: int = 20) -> list[dict[str, Any]]:
-    return _RECENT[: min(limit, _max_recent())]
+def list_recent_runs(limit: int = 20, user_id: int | None = None) -> list[dict[str, Any]]:
+    items = _RECENT[: min(limit * 3, _max_recent())] if user_id is not None else _RECENT
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if user_id is not None:
+            meta = item.get("meta") or {}
+            if meta.get("user_id") != user_id:
+                continue
+        out.append(item)
+        if len(out) >= min(limit, _max_recent()):
+            break
+    return out
 
 
-def get_run(run_id: str) -> dict[str, Any] | None:
+def get_run(run_id: str, user_id: int | None = None) -> dict[str, Any] | None:
     for item in _RECENT:
-        if item.get("run_id") == run_id:
-            return item
+        if item.get("run_id") != run_id:
+            continue
+        if user_id is not None:
+            meta = item.get("meta") or {}
+            if meta.get("user_id") != user_id:
+                return None
+        return item
     return None
 
 

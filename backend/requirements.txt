@@ -23,5 +23,9 @@ ddgs>=9.0.0
 # pypinyin>=0.51.0
 # soundfile>=0.12.0
 faster-whisper>=1.0.0
-# Optional neural embeddings (P3 default uses zero-dep hash or remote openai)
+# Local neural embeddings (Dense channel); falls back to hash if not installed
+fastembed>=0.4.0
+# Load testing
+locust>=2.32.0
+# Optional heavier embeddings
 # sentence-transformers>=3.0.0

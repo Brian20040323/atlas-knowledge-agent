@@ -27,6 +27,8 @@ ALLOWED_EXT = {
     ".doc",
     ".pptx",
     ".xlsx",
+    # archives (expanded on upload)
+    ".zip",
     # images
     ".png",
     ".jpg",
@@ -40,6 +42,7 @@ ALLOWED_EXT = {
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
 TEXT_EXT = {".txt", ".md", ".markdown", ".csv", ".json"}
+ARCHIVE_INNER_EXT = ALLOWED_EXT - {".zip"}
 
 
 class IngestLimitError(ValueError):
@@ -82,6 +85,8 @@ def detect_source_type(filename: str) -> str:
         return "pptx"
     if ext == ".xlsx":
         return "xlsx"
+    if ext == ".zip":
+        return "zip"
     if ext in IMAGE_EXT:
         return "image"
     if ext in {".md", ".markdown"}:
@@ -95,8 +100,94 @@ def detect_source_type(filename: str) -> str:
     return "file"
 
 
+_FAIL_MARKERS = (
+    "未能提取到文本",
+    "解析失败",
+    "暂不完整支持",
+    "未提取到可见正文",
+    "未提取到文本",
+    "未提取到单元格",
+    "未能提取有效文本",
+    "未识别到文字",
+)
+
+
+def is_weak_extraction(text: str) -> bool:
+    """True when extract is empty, placeholder, or too thin to answer questions."""
+    body = (text or "").strip()
+    if len(body) < 12:
+        return True
+    if body.startswith("（") and any(m in body for m in _FAIL_MARKERS):
+        return True
+    # OCR/meta-only stubs without real body
+    if body.startswith("图片文件：") and "OCR 识别结果：" not in body:
+        return True
+    if "未识别到文字" in body:
+        return True
+    return False
+
+
+def extract_zip_members(
+    data: bytes,
+    *,
+    max_files: int = 40,
+    max_member_bytes: int = 25 * 1024 * 1024,
+) -> list[tuple[str, bytes]]:
+    """Return (basename, bytes) for supported files inside a zip."""
+    import zipfile
+
+    out: list[tuple[str, bytes]] = []
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise IngestLimitError(f"无法打开 zip：{exc}") from exc
+
+    with zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename.replace("\\", "/")
+            base = Path(name).name
+            if not base or base.startswith("."):
+                continue
+            if "__MACOSX" in name.split("/"):
+                continue
+            ext = Path(base).suffix.lower()
+            if ext not in ARCHIVE_INNER_EXT:
+                continue
+            if info.file_size > max_member_bytes:
+                continue
+            try:
+                payload = zf.read(info)
+            except Exception:  # noqa: BLE001
+                continue
+            if not payload:
+                continue
+            out.append((base, payload))
+            if len(out) >= max_files:
+                break
+    return out
+
+
+def extract_text_from_zip(data: bytes) -> str:
+    """Flatten zip members into one searchable text block."""
+    members = extract_zip_members(data)
+    if not members:
+        return (
+            "（zip 内没有可解析的文件。"
+            "请放入 PDF / Word / txt / md / 图片等支持的类型后重试。）"
+        )
+    parts: list[str] = [f"压缩包共解析 {len(members)} 个文件："]
+    for name, payload in members:
+        body = extract_text_from_bytes(name, payload).strip()
+        parts.append(f"## 文件：{name}\n{body or '（无文本）'}")
+    return "\n\n".join(parts)
+
+
 def extract_text_from_bytes(filename: str, data: bytes) -> str:
     ext = Path(filename).suffix.lower()
+    if ext == ".zip":
+        return extract_text_from_zip(data)
     if ext == ".pdf":
         return _extract_pdf(data)
     if ext == ".docx":
@@ -139,7 +230,7 @@ def _extract_pdf(data: bytes) -> str:
             return "\n\n".join(parts)
 
         # 扫描件：尝试逐页渲染 + OCR（依赖可选）
-        ocr_parts = _ocr_pdf_pages(data, max_pages=8)
+        ocr_parts = _ocr_pdf_pages(data, max_pages=24)
         if ocr_parts:
             return "\n\n".join(ocr_parts)
         return (
@@ -150,7 +241,7 @@ def _extract_pdf(data: bytes) -> str:
         return f"（PDF 解析失败：{exc}）"
 
 
-def _ocr_pdf_pages(data: bytes, max_pages: int = 8) -> list[str]:
+def _ocr_pdf_pages(data: bytes, max_pages: int = 24) -> list[str]:
     """Best-effort OCR for scanned PDFs via pypdfium2 + pytesseract."""
     try:
         import pypdfium2 as pdfium
@@ -373,17 +464,29 @@ def _ocr_pil(image) -> str:  # noqa: ANN001
         return ""
     try:
         import pytesseract
+        from PIL import ImageEnhance, ImageOps
 
-        text = pytesseract.image_to_string(image, lang="chi_sim+eng")
-        return (text or "").strip()
+        # 轻度增强：提升扫描件/截图对比度
+        work = image.convert("L") if image.mode != "L" else image
+        work = ImageOps.autocontrast(work)
+        work = ImageEnhance.Contrast(work).enhance(1.4)
+        # 小图放大，利于细字
+        if max(work.size) < 1200:
+            scale = 1200 / max(work.size)
+            work = work.resize(
+                (max(1, int(work.size[0] * scale)), max(1, int(work.size[1] * scale)))
+            )
+        for lang in ("chi_sim+eng", "eng"):
+            try:
+                text = pytesseract.image_to_string(work, lang=lang, config="--psm 6")
+                text = (text or "").strip()
+                if len(text) >= 8:
+                    return text
+            except Exception:
+                continue
+        return ""
     except Exception:
-        try:
-            import pytesseract
-
-            text = pytesseract.image_to_string(image, lang="eng")
-            return (text or "").strip()
-        except Exception:
-            return ""
+        return ""
 
 
 def _try_ocr(data: bytes) -> str:

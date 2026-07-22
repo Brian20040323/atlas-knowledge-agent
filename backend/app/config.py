@@ -15,11 +15,20 @@ class Settings(BaseSettings):
 
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"
-    llm_model: str = "gpt-4o-mini"
+    # 默认便宜模型；复杂通用题 / 细想 / 联网摘要可升到 llm_model_complex
+    llm_model: str = "deepseek-v4-flash"
+    llm_model_complex: str = "deepseek-v4-pro"
     host: str = "127.0.0.1"
     port: int = 8000
+    cors_origins: str = ""  # comma-separated origins; empty means same-origin only
     mock_mode: str = "auto"  # auto | true | false
     database_url: str = ""
+    # 公网访问口令；非空时启用站点门禁（cookie）。局域网调试可留空。
+    atlas_public_password: str = ""
+    # 多人账号隔离：开启后必须注册/登录，会话按用户隔离
+    atlas_user_auth: bool = True
+    # 注册邀请码；非空时注册必须填写该码（防止公网随便开号）
+    atlas_register_secret: str = ""
 
     # Custom voice TTS: local XTTS (data/voice/clone_sample.wav) or ElevenLabs
     tts_provider: str = "auto"  # auto | local | elevenlabs | browser
@@ -48,15 +57,18 @@ class Settings(BaseSettings):
     http_timeout_web: float = 12.0  # DuckDuckGo / 网页搜索超时（秒）
     http_timeout_research: float = 6.0  # Wiki / research HTTP 超时（秒）
     llm_timeout_seconds: float = 90.0  # LLM HTTP 超时（秒）
-    max_concurrent_chats: int = 4  # 同时进行的对话上限；超额返回 429
+    max_concurrent_chats: int = 20  # 全站同时生成上限（多人共享）
+    max_chats_per_user: int = 2  # 同一账号同时生成上限，避免一人占满
+    chat_queue_wait_seconds: float = 45.0  # 满载时排队等待后再 429
+    llm_http_max_connections: int = 24  # 出站 LLM 连接池上限
     web_circuit_fail_threshold: int = 2  # 本轮连续外网失败达 N 次后熔断，仅本地 L1
     trace_max_recent: int = 40  # 内存中保留的最近 Trace 条数
 
     # ---------- 可选向量检索（P3，默认关闭 → TF-IDF）----------
     rag_vector_enabled: bool = False  # true 时启用 embedding + 本地向量索引
-    rag_embedding_provider: str = "hash"  # hash（本地零依赖）| openai（远程 API）
-    rag_embedding_model: str = "text-embedding-3-small"  # openai provider 用
-    rag_embedding_dim: int = 256  # hash 向量维度
+    rag_embedding_provider: str = "hash"  # hash | fastembed（本地神经向量）| openai（远程 API）
+    rag_embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    rag_embedding_dim: int = 512  # bge-small-zh=512；MiniLM=384；openai 以返回维为准
     rag_vector_index_dir: str = "data/vector_index"  # 相对仓库根目录
     rag_lexical_weight: float = 0.55  # 向量模式下 lexical 权重
     rag_vector_weight: float = 0.45  # 向量模式下 embedding 余弦权重
@@ -68,7 +80,7 @@ class Settings(BaseSettings):
     rag_rerank_timeout_seconds: float = 20.0
 
     # ---------- 入库自动抽 FAQ（T8-3，有 LLM 时默认开）----------
-    rag_faq_extract_on_learn: bool = True
+    rag_faq_extract_on_learn: bool = False
     rag_faq_model: str = "deepseek-v4-pro"
     rag_faq_max_pairs: int = 6
 

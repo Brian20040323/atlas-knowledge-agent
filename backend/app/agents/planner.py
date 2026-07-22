@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any
 
 from app.config import get_settings
-from app.rag.knowledge import parse_learn_intent
+from app.rag.knowledge import is_recent_doc_question, parse_learn_intent
 from app.rag.policy_intent import POLICY_KEYWORDS, is_policy_question
 from app.rag.research import filter_relevant_hits, needs_external_research, parse_auto_learn_intent
 from app.rag.web_search import parse_web_search_intent, wants_online_search
@@ -43,17 +43,28 @@ __all__ = [
 ]
 
 
+# 仅这些「制度短词」才走澄清；地名/校名/实体短问应直接检索作答
+_CLARIFY_TOPICS: frozenset[str] = frozenset({
+    "薪资", "工资", "报销", "考勤", "福利", "差旅", "年假", "加班",
+    "社保", "公积金", "请假", "入职", "离职", "制度", "补贴", "津贴",
+})
+
+
 def _needs_clarification(query: str, hits: list[dict[str, Any]] | None = None) -> bool:
-    """T7-1: 短问（≤3字）且检索命中不足 → 反问而非猜测。"""
+    """Only clarify true policy shorthand — never block entity names like「茶陵一中」."""
     text = (query or "").strip()
-    # 过短且非命令式
-    if len(text) <= 3 and not any(k in text for k in ("记住", "学习", "联网", "搜索")):
+    if not text:
+        return False
+    if any(k in text for k in ("记住", "学习", "联网", "搜索", "？", "?", "吗", "怎么", "什么")):
+        return False
+    # 制度短词（精确命中）→ 反问方向
+    if text in _CLARIFY_TOPICS:
+        return True
+    # 仅 1～2 字且检索极弱时才澄清（「费」「假」等）
+    if len(text) <= 2:
         hits = hits or []
         if not hits or float(hits[0].get("score") or 0) < 5.0:
             return True
-    # 纯概念词（无动词、无问号）
-    if len(text) <= 4 and not any(k in text for k in ("是", "有", "能", "可", "会", "要", "吗", "？", "多", "少", "几")):
-        return True
     return False
 
 
@@ -271,6 +282,13 @@ def _route_normal(
             notes=["联网优先（加速）"],
         )
 
+    # 「刚上传的文档 / 这份文件讲什么」必须走本地库，禁止漂到通用闲聊/百科
+    if is_recent_doc_question(text) or is_recent_doc_question(focus):
+        return _local_plan(
+            query,
+            notes=["指向本地/刚上传文档，强制 LOCAL"],
+        )
+
     from app.rag.query_rewrite import rewrite_search_query
 
     focus_r = rewrite_search_query(focus) or focus
@@ -294,14 +312,17 @@ def _route_normal(
                     query,
                     notes=["追问且本地已有命中，禁止转外网"],
                 )
-        if any(k in focus for k in ("大学", "学院", "就业", "录取", "高考", "专业")):
+        if any(k in focus for k in (
+            "大学", "学院", "就业", "录取", "高考", "专业",
+            "中学", "一中", "二中", "小学", "高中", "初中", "学校", "校区",
+        )):
             return AgentPlan(
                 intent=Intent.WEB,
                 query=query,
                 steps=["web_search", "synthesize"],
                 force_web=True,
                 use_web=True,
-                notes=["院校/就业类问题 → 联网检索"],
+                notes=["院校/学校类问题 → 联网检索"],
             )
         # 百科型长问仍走 research；其余通用题直接 LLM（制度优先产品下的通用能力）
         encyclopedic = any(

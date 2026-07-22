@@ -37,6 +37,16 @@ def decompose_composite_query(text: str) -> list[str]:
     # 步骤 1: 按问号分句
     raw_parts = [p.strip() for p in re.split(r"[？?。！!，,；;]", text) if p.strip()]
 
+    # 「根据《X制度》，问题一？问题二？」中的首段是检索范围，不是独立问题。
+    # 把它传播给后续子问，避免泛化的「根据某制度」单独占用一次检索，
+    # 也避免第二问丢失文档名后被旧版同类制度抢答。
+    context_prefix = ""
+    if len(raw_parts) >= 2 and re.fullmatch(
+        r"(?:请)?(?:根据|依据|按照).{2,}(?:制度|文档|规定|手册|办法)",
+        raw_parts[0],
+    ):
+        context_prefix = raw_parts.pop(0)
+
     sub_queries: list[str] = []
 
     for part in raw_parts:
@@ -52,6 +62,8 @@ def decompose_composite_query(text: str) -> list[str]:
                 # 清理问句标记
                 cleaned = _clean_query(piece)
                 if cleaned and len(cleaned) >= 2:
+                    if context_prefix and context_prefix not in cleaned:
+                        cleaned = f"{context_prefix} {cleaned}"
                     sub_queries.append(cleaned)
 
     # 去重（保留顺序）

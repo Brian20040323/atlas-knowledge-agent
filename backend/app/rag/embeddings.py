@@ -28,9 +28,7 @@ class HashEmbedding:
     """
     Deterministic local hash embedding (feature hashing).
 
-    Zero model download / no GPU — suitable as default when RAG_VECTOR_ENABLED=true
-    without pulling sentence-transformers. Not as strong as neural embeddings, but
-    enables a real local vector index path that can be switched off.
+    Zero model download / no GPU — suitable as fallback when FastEmbed is unavailable.
     """
 
     name = "hash"
@@ -47,12 +45,47 @@ class HashEmbedding:
             digest = hashlib.sha256(tok.encode("utf-8")).digest()
             idx = int.from_bytes(digest[:4], "big") % self.dim
             sign = 1.0 if (digest[4] % 2 == 0) else -1.0
-            # mild TF: longer / rarer tokens get same unit weight (hashing trick)
             vec[idx] += sign
         return _l2_normalize(vec)
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         return [self.embed_one(t) for t in texts]
+
+
+class FastEmbedEmbedding:
+    """
+    Local neural dense embeddings via FastEmbed (ONNX, no PyTorch required).
+
+    Default model: multilingual MiniLM (CN/EN). First run downloads model weights.
+    """
+
+    name = "fastembed"
+    DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"
+
+    def __init__(self, model: str = "", dim: int = 384) -> None:
+        self.model_name = (model or self.DEFAULT_MODEL).strip() or self.DEFAULT_MODEL
+        self.dim = max(32, int(dim))
+        self._model = None
+
+    def _ensure(self):
+        if self._model is not None:
+            return self._model
+        from fastembed import TextEmbedding  # type: ignore
+
+        self._model = TextEmbedding(model_name=self.model_name)
+        return self._model
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        model = self._ensure()
+        out: list[list[float]] = []
+        for emb in model.embed(texts):
+            vec = _l2_normalize([float(x) for x in emb])
+            out.append(vec)
+        if out:
+            self.dim = len(out[0])
+        return out
 
 
 class OpenAIEmbedding:
@@ -124,5 +157,13 @@ def get_embedding_backend(
             dim=dim,
             timeout=timeout,
         )
-    # hash is the zero-dep default when vector mode is on
+    if name in {"fastembed", "bge", "neural", "local"}:
+        try:
+            return FastEmbedEmbedding(
+                model=model or FastEmbedEmbedding.DEFAULT_MODEL,
+                dim=dim or 384,
+            )
+        except Exception:
+            # Import/init failure → degrade to hash so product stays up
+            return HashEmbedding(dim=dim or 384)
     return HashEmbedding(dim=dim)

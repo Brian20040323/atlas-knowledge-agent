@@ -15,9 +15,12 @@ Thumbs.db
 
 # Data & logs (keep structure, drop runtime/secrets)
 data/*.db
+data/*.db-shm
+data/*.db-wal
 data/uploads/*
 !data/uploads/.gitkeep
 data/_*
+data/vector_index/
 *.log
 
 # Local media / scratch exports
@@ -31,5 +34,22 @@ node_modules/
 frontend/dist/
 .next/
 
-# CI workflow requires GitHub token 'workflow' scope; keep local / re-add later
-.github/workflows/
+# local public deploy secrets/logs
+data/_public_access.txt
+data/_boot_lan_server.py
+data/_localtunnel.log
+data/_localtunnel.err.log
+data/_lan_uvicorn.out.log
+data/_lan_uvicorn.err.log
+
+# Local tunnel binary / heavy unused assets
+tools/*.exe
+frontend/static/bg-*.png
+frontend/static/bg-*.jpg
+
+# Reproducible Locust reports (keep docs/LOAD_TEST.md summary only)
+docs/locust*.csv
+docs/locust*.txt
+docs/locust*.html
+docs/reports/
+

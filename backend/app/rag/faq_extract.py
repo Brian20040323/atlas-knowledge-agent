@@ -111,6 +111,7 @@ async def maybe_extract_faq_after_learn(
     content: str,
     *,
     settings: Settings | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """After a document is saved, optionally create 《title》FAQ companion doc."""
     settings = settings or get_settings()
@@ -151,7 +152,7 @@ async def maybe_extract_faq_after_learn(
     try:
         async with session_maker() as db:
             # Replace previous FAQ with same title if exists
-            existing = await crud.list_documents(db, limit=200)
+            existing = await crud.list_documents(db, limit=200, user_id=user_id)
             old = next((d for d in existing if d.title == faq_title), None)
             if old is not None:
                 old.content = faq_body
@@ -161,7 +162,11 @@ async def maybe_extract_faq_after_learn(
                 faq_id = old.id
             else:
                 doc = await crud.create_document(
-                    db, faq_title, faq_body, source_type="faq_extract"
+                    db,
+                    faq_title,
+                    faq_body,
+                    source_type="faq_extract",
+                    user_id=user_id,
                 )
                 await db.commit()
                 await db.refresh(doc)

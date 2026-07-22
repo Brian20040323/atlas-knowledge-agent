@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- 简约：精密指针 -->
+  <rect width="32" height="32" rx="9" fill="#0a1218"/>
+  <circle cx="16" cy="16" r="9" stroke="#d1fae5" stroke-width="1.1"/>
+  <path d="M16 8.2L18.4 16 16 23.8 13.6 16 16 8.2Z" fill="#5eead4" opacity="0.95"/>
+  <circle cx="16" cy="16" r="1.5" fill="#0a1218" stroke="#ecfdf5" stroke-width="1"/>
+</svg>

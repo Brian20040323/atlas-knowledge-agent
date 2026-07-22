@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- 简约：三点知识网 -->
+  <rect width="32" height="32" rx="9" fill="#0a1218"/>
+  <path d="M16 9.5L22.5 20.5H9.5L16 9.5Z" stroke="#99f6e4" stroke-width="1.15" stroke-linejoin="round"/>
+  <circle cx="16" cy="16.2" r="1.5" fill="#5eead4"/>
+  <circle cx="16" cy="9.5" r="1.15" fill="#ecfdf5"/>
+  <circle cx="22.5" cy="20.5" r="1.15" fill="#ecfdf5"/>
+  <circle cx="9.5" cy="20.5" r="1.15" fill="#ecfdf5"/>
+</svg>

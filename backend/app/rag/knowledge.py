@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import asyncio
 from contextlib import nullcontext
 from typing import Any, TYPE_CHECKING
 
@@ -19,6 +20,17 @@ if TYPE_CHECKING:
     from app.observability.traces import AgentTrace
 
 _LEARN_PREFIXES = ("记住：", "记住:", "学习：", "学习:", "请记住：", "请记住:", "记下：", "记下:")
+
+_RECENT_DOC_HINT = re.compile(
+    r"(刚上传|刚才导入|刚导入|刚导的|最近上传|最近导入|"
+    r"这份文档|这篇文档|这个文档|这个文件|这份文件|导入的文档|"
+    r"文档(里|中)?(有|讲|说|写)|文件内容|文档内容)"
+)
+
+
+def is_recent_doc_question(text: str) -> bool:
+    """User is asking about a just-uploaded / current document rather than open-web facts."""
+    return bool(_RECENT_DOC_HINT.search((text or "").strip()))
 
 
 def parse_learn_intent(text: str) -> tuple[str, str] | None:
@@ -125,9 +137,11 @@ class KnowledgeService:
     async def search(
         self,
         query: str,
-        top_k: int = 3,
+        top_k: int = 6,
         *,
+        prefer_ids: list[int] | None = None,
         trace: "AgentTrace | None" = None,
+        user_id: int | None = None,
     ) -> list[dict[str, Any]]:
         settings = get_settings()
         scan_limit = max(1, int(settings.rag_scan_limit))
@@ -139,14 +153,40 @@ class KnowledgeService:
 
         original_query = (query or "").strip()
         query = rewrite_search_query(original_query)
+        prefer: list[int] = []
+        seen_pref: set[int] = set()
+        for raw in prefer_ids or []:
+            try:
+                pid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if pid in seen_pref:
+                continue
+            seen_pref.add(pid)
+            prefer.append(pid)
+            if len(prefer) >= 8:
+                break
 
         scan_ctx = trace.span("retrieve_db_scan", scan_limit=scan_limit) if trace else nullcontext()
         with scan_ctx as scan_span:
             session_maker = get_session_maker()
             async with session_maker() as db:
-                documents = await crud.list_documents(db, limit=scan_limit)
+                documents = await crud.list_documents(
+                    db, limit=scan_limit, user_id=user_id
+                )
+                if prefer:
+                    extra = await crud.get_documents_by_ids(
+                        db, prefer, user_id=user_id
+                    )
+                    have = {d.id for d in documents}
+                    for doc in reversed(extra):
+                        if doc.id not in have:
+                            documents.insert(0, doc)
+                            have.add(doc.id)
             if scan_span is not None:
                 scan_span.meta["docs_scanned"] = len(documents)
+                if prefer:
+                    scan_span.meta["prefer_ids"] = prefer
 
         vector_on = bool(settings.rag_vector_enabled)
         retriever = get_retriever(vector_on)
@@ -166,16 +206,85 @@ class KnowledgeService:
             else nullcontext()
         )
         with score_ctx as score_span:
-            results = retriever.rank(
+            # TF-IDF, FastEmbed and JSON index work are synchronous. Keep them
+            # off FastAPI's event loop so concurrent SSE chats remain responsive.
+            results = await asyncio.to_thread(
+                retriever.rank,
                 query,
                 documents,
-                top_k=recall_k,
+                top_k=max(recall_k, len(prefer) + recall_k),
                 chunk_size=chunk_size,
                 overlap=overlap,
                 max_chunks=max_chunks,
                 settings=settings,
                 lexical_scorer=_score,
             )
+
+            # Composer 附加文档：强制注入本轮优先文档的最佳片段，避免被差旅等旧库顶掉
+            if prefer:
+                by_id = {d.id: d for d in documents}
+                preferred_hits: list[dict[str, Any]] = []
+                for pid in prefer:
+                    doc = by_id.get(pid)
+                    if not doc:
+                        continue
+                    sc, chunk, _ci, _ct = _best_chunk_score(
+                        original_query or query,
+                        doc.title or "",
+                        doc.content or "",
+                    )
+                    body = (chunk or (doc.content or ""))[:1200]
+                    if len(body.strip()) < 8:
+                        continue
+                    src = (getattr(doc, "source_type", None) or "document").lower()
+                    preferred_hits.append(
+                        {
+                            "id": doc.id,
+                            "title": doc.title or "",
+                            "content": body,
+                            "score": max(float(sc), 5.0) + 4.0,
+                            "source": src,
+                            "source_type": src,
+                            "retrieval": "prefer_id",
+                        }
+                    )
+                if preferred_hits:
+                    seen = {h["id"] for h in preferred_hits}
+                    rest = [h for h in results if h.get("id") not in seen]
+                    results = preferred_hits + rest
+
+            # 「刚上传的文档 / 这份文件讲什么」：关键词对不上英文原文时，强制带上最近用户文档
+            if (not results or float(results[0].get("score") or 0) < 3.0) and _RECENT_DOC_HINT.search(
+                original_query
+            ):
+                skip_src = {"auto_wiki", "faq_extract", "web"}
+                recent_hits: list[dict[str, Any]] = []
+                for doc in documents:
+                    src = (getattr(doc, "source_type", None) or "").lower()
+                    if src in skip_src:
+                        continue
+                    title = doc.title or ""
+                    if title.endswith(" FAQ") or "FAQ" in title:
+                        continue
+                    body = (doc.content or "")[:1200]
+                    if len(body.strip()) < 12:
+                        continue
+                    recent_hits.append(
+                        {
+                            "id": doc.id,
+                            "title": title,
+                            "content": body,
+                            "score": 7.0,
+                            "source": src or "document",
+                            "source_type": src or "document",
+                            "retrieval": "recent_upload",
+                        }
+                    )
+                    if len(recent_hits) >= 3:
+                        break
+                if recent_hits:
+                    seen = {h["id"] for h in recent_hits}
+                    results = recent_hits + [h for h in results if h.get("id") not in seen]
 
             if score_span is not None:
                 score_span.meta.update(
@@ -188,6 +297,7 @@ class KnowledgeService:
                     top_titles=[(r.get("title") or "")[:40] for r in results[:5]],
                     duration_ms=round((time.perf_counter() - t0) * 1000, 1),
                     recall_k=recall_k,
+                    prefer_ids=prefer or None,
                 )
 
         if rerank_on and results:
@@ -214,14 +324,23 @@ class KnowledgeService:
         return results
 
     async def learn(
-        self, title: str, content: str, source_type: str = "text"
+        self,
+        title: str,
+        content: str,
+        source_type: str = "text",
+        *,
+        user_id: int | None = None,
     ) -> dict[str, Any]:
         settings = get_settings()
         validate_content_length(content, settings.doc_max_chars)
         session_maker = get_session_maker()
         async with session_maker() as db:
             doc = await crud.create_document(
-                db, title, content, source_type=source_type or "text"
+                db,
+                title,
+                content,
+                source_type=source_type or "text",
+                user_id=user_id,
             )
             await db.commit()
             await db.refresh(doc)
@@ -253,10 +372,12 @@ class KnowledgeService:
             pass
         return saved
 
-    async def list_all(self, limit: int = 50) -> list[dict[str, Any]]:
+    async def list_all(
+        self, limit: int = 50, *, user_id: int | None = None
+    ) -> list[dict[str, Any]]:
         session_maker = get_session_maker()
         async with session_maker() as db:
-            documents = await crud.list_documents(db, limit=limit)
+            documents = await crud.list_documents(db, limit=limit, user_id=user_id)
         return [
             {
                 "id": d.id,
@@ -267,7 +388,7 @@ class KnowledgeService:
             for d in documents
         ]
 
-    def format_context(self, hits: list[dict[str, Any]], *, max_chars: int = 400) -> str:
+    def format_context(self, hits: list[dict[str, Any]], *, max_chars: int = 1200) -> str:
         if not hits:
             return ""
         blocks = []

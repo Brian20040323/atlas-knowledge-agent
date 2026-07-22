@@ -51,7 +51,8 @@ def corpus_fingerprint(documents: Iterable[Any], *, chunk_size: int, overlap: in
         doc_id = getattr(doc, "id", None)
         title = getattr(doc, "title", "") or ""
         content = getattr(doc, "content", "") or ""
-        h.update(f"{doc_id}|{len(content)}|{title}\n".encode("utf-8", errors="ignore"))
+        content_hash = hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
+        h.update(f"{doc_id}|{title}|{content_hash}\n".encode("utf-8", errors="ignore"))
     return h.hexdigest()[:32]
 
 

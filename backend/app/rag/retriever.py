@@ -98,11 +98,18 @@ class TfidfHybridRetriever:
         q_tokens = hybrid_tokenize(query)
         scored: list[tuple[float, float, float, Any, str, int, int]] = []
         for doc, ch, toks, lex, ci, total in chunk_rows:
-            if lex < 2.0 and not (set(q_tokens) & set(toks)):
+            overlap = set(q_tokens) & set(toks)
+            if lex < 1.5 and not overlap:
                 continue
             h = hybrid_score(lex, q_tokens, toks, idf)
-            if h >= 3.0:
-                scored.append((h, lex, h - lex, doc, ch, ci, total))
+            # 短关键词/缩写（如 FYP）lexical 够但 hybrid 会被压到 3 以下 → 放行精确命中
+            keep = (
+                h >= 2.2
+                or (lex >= 2.5 and bool(overlap))
+                or lex >= 4.0
+            )
+            if keep:
+                scored.append((max(h, lex * 0.85), lex, h - lex, doc, ch, ci, total))
 
         best_by_doc: dict[int, tuple[float, float, float, Any, str, int, int]] = {}
         for row in scored:
@@ -230,7 +237,7 @@ class VectorHybridRetriever:
                     score=score,
                     lex=lex,
                     vec_part=vec_part,
-                    retrieval="vector_hybrid",
+                    retrieval="dense+sparse-hybrid",
                     chunk_id=ch_id,
                     chunk_total=ch_t,
                 )

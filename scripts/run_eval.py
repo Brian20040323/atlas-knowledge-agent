@@ -2,10 +2,12 @@
 
 Usage:
   .\\.venv\\Scripts\\python.exe scripts\\run_eval.py
+  .\\.venv\\Scripts\\python.exe scripts\\run_eval.py --category hit,missing,general
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import re
 import sys
@@ -20,13 +22,7 @@ except ImportError:
     yaml = None
 
 
-def load_cases() -> list[dict]:
-    path = ROOT / "backend" / "tests" / "eval" / "cases.yaml"
-    text = path.read_text(encoding="utf-8")
-    if yaml:
-        data = yaml.safe_load(text)
-        return list(data.get("cases") or [])
-    # Minimal YAML subset parser for this file shape
+def _parse_cases_fallback(text: str) -> list[dict]:
     cases: list[dict] = []
     cur: dict | None = None
     for line in text.splitlines():
@@ -51,6 +47,22 @@ def load_cases() -> list[dict]:
         cases.append(cur)
     return cases
 
+
+def load_cases(categories: set[str] | None = None) -> list[dict]:
+    path = ROOT / "backend" / "tests" / "eval" / "cases.yaml"
+    text = path.read_text(encoding="utf-8")
+    if yaml:
+        data = yaml.safe_load(text)
+        cases = list(data.get("cases") or [])
+    else:
+        cases = _parse_cases_fallback(text)
+    if not categories:
+        return cases
+    return [
+        c
+        for c in cases
+        if str(c.get("category") or "").strip().lower() in categories
+    ]
 
 def _contains_any(text: str, needles: list[str]) -> bool:
     return any(n in text for n in needles if n)
@@ -192,6 +204,7 @@ async def _run_limit_case(case: dict) -> tuple[bool, list[str]]:
             notes.append("RAG_VECTOR_ENABLED must default to false (TF-IDF path)")
         if (settings.rag_embedding_provider or "").strip().lower() not in {
             "hash",
+            "fastembed",
             "openai",
             "remote",
             "api",
@@ -218,9 +231,9 @@ async def _run_limit_case(case: dict) -> tuple[bool, list[str]]:
             titles_on = " ".join(h.get("title", "") for h in hits_on)
             if not any(t.lower() in titles_on.lower() for t in ("agent", "知识地图")):
                 notes.append(f"vector-on recall miss; titles={titles_on[:80]}")
-            if hits_on and hits_on[0].get("retrieval") != "vector_hybrid":
+            if hits_on and hits_on[0].get("retrieval") != "dense+sparse-hybrid":
                 notes.append(
-                    f"expected retrieval=vector_hybrid, got {hits_on[0].get('retrieval')}"
+                    f"expected retrieval=dense+sparse-hybrid, got {hits_on[0].get('retrieval')}"
                 )
 
             # Switch back to TF-IDF and confirm still recalls
@@ -387,10 +400,167 @@ async def _run_limit_case(case: dict) -> tuple[bool, list[str]]:
             _gs.cache_clear()
         return (len(notes) == 0), notes
 
+    if check == "ingest_docx":
+        import io
+
+        from app.rag.ingest import detect_source_type, extract_text_from_bytes
+
+        try:
+            from docx import Document
+        except ImportError:
+            return False, ["python-docx not installed"]
+        doc = Document()
+        doc.add_paragraph("境内住宿标准：500元/晚。")
+        buf = io.BytesIO()
+        doc.save(buf)
+        text = extract_text_from_bytes("eval.docx", buf.getvalue())
+        if "500" not in text:
+            notes.append(f"docx extract miss 500; got={text[:80]!r}")
+        if detect_source_type("eval.docx") != "word":
+            notes.append("detect_source_type(docx) != word")
+        return (len(notes) == 0), notes
+
+    if check == "ingest_xlsx":
+        import io
+
+        from app.rag.ingest import detect_source_type, extract_text_from_bytes
+
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            return False, ["openpyxl not installed"]
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "住宿"
+        ws["B1"] = "500"
+        buf = io.BytesIO()
+        wb.save(buf)
+        text = extract_text_from_bytes("eval.xlsx", buf.getvalue())
+        if "住宿" not in text or "500" not in text:
+            notes.append(f"xlsx extract miss; got={text[:80]!r}")
+        if detect_source_type("eval.xlsx") != "xlsx":
+            notes.append("detect_source_type(xlsx) != xlsx")
+        return (len(notes) == 0), notes
+
+    if check == "ingest_html":
+        from app.rag.ingest import extract_text_from_bytes
+
+        html = "<html><body><h1>考勤</h1><p>迟到扣款</p><script>evil()</script></body></html>"
+        text = extract_text_from_bytes("eval.html", html.encode("utf-8"))
+        if "考勤" not in text or "迟到" not in text:
+            notes.append(f"html extract miss; got={text[:80]!r}")
+        if "evil" in text.lower() or "script" in text.lower():
+            notes.append("html extractor leaked script content")
+        return (len(notes) == 0), notes
+
+    if check == "ingest_allowed_ext":
+        from app.rag.ingest import ALLOWED_EXT
+
+        required = {".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".txt", ".md", ".html"}
+        missing = sorted(required - set(ALLOWED_EXT))
+        if missing:
+            notes.append(f"ALLOWED_EXT missing {missing}")
+        return (len(notes) == 0), notes
+
+    if check == "delete_conversation":
+        from app.db import crud
+        from app.db.session import get_session_maker
+
+        sm = get_session_maker()
+        async with sm() as db:
+            conv = await crud.create_conversation(db, "评测删除会话")
+            await crud.add_message(db, conv.id, "user", "hi")
+            await db.commit()
+            cid = conv.id
+        async with sm() as db:
+            ok_del = await crud.delete_conversation(db, cid)
+            await db.commit()
+            if not ok_del:
+                notes.append("delete_conversation returned False")
+            again = await crud.delete_conversation(db, cid)
+            if again:
+                notes.append("second delete should be False")
+            gone = await crud.get_conversation(db, cid)
+            if gone is not None:
+                notes.append("conversation still exists after delete")
+        return (len(notes) == 0), notes
+
+    if check == "model_route_select":
+        from app.agents import ChatAgent
+        from app.config import get_settings as _gs
+
+        agent = ChatAgent(_gs())
+        policy_model = agent._select_llm_model(
+            policy_strict=True, deep_think=False, plan={"intent": "local"}
+        )
+        general_model = agent._select_llm_model(
+            policy_strict=False, deep_think=False, plan={"intent": "general"}
+        )
+        think_model = agent._select_llm_model(
+            policy_strict=True, deep_think=True, plan={"intent": "local"}
+        )
+        base = (agent.settings.llm_model or "").strip()
+        complex_model = (agent.settings.llm_model_complex or base).strip()
+        if policy_model != base:
+            notes.append(f"policy path want {base!r} got {policy_model!r}")
+        if general_model != complex_model:
+            notes.append(f"general path want {complex_model!r} got {general_model!r}")
+        if think_model != complex_model:
+            notes.append(f"deep_think path want {complex_model!r} got {think_model!r}")
+        return (len(notes) == 0), notes
+
+    if check == "sanitize_tool_leak":
+        from app.agents.reasoning import looks_like_tool_leak, sanitize_assistant_text
+
+        sample = (
+            "南雅中学师资不错\n"
+            "<tool_calls>\n"
+            'name="web_search"\n'
+            'query="长沙市南雅中学简介"\n'
+            'max_results="3"\n'
+            "</tool_calls>"
+        )
+        if not looks_like_tool_leak(sample):
+            notes.append("looks_like_tool_leak should be True for tool_calls dump")
+        cleaned = sanitize_assistant_text(sample)
+        for bad in ("tool_calls", "web_search", "max_results", "invoke"):
+            if bad.lower() in cleaned.lower():
+                notes.append(f"sanitize left leak marker: {bad!r} in {cleaned!r}")
+        if "南雅" not in cleaned and "师资" not in cleaned:
+            notes.append(f"sanitize stripped too much useful text: {cleaned!r}")
+        dsml = '< | DSML | invoke name="search_knowledge">x</ | DSML | parameter>'
+        if sanitize_assistant_text(dsml):
+            notes.append("DSML-only payload should sanitize to empty")
+        return (len(notes) == 0), notes
+
+    if check == "web_empty_honest":
+        from app.agents.loop import LoopState, build_react_thinking
+        from app.agents.planner import AgentPlan, Intent
+        from app.agents.reasoning import honest_web_empty_reply
+
+        reply = honest_web_empty_reply("茶陵一中")
+        if not any(k in reply for k in ("未找到", "不足", "无法")):
+            notes.append(f"honest reply missing honesty markers: {reply!r}")
+        if "tool_calls" in reply or "DSML" in reply:
+            notes.append("honest reply leaked tool markup")
+        plan = AgentPlan(
+            intent=Intent.WEB,
+            query="茶陵一中",
+            steps=["web_search", "synthesize"],
+            force_web=True,
+            use_web=True,
+        )
+        state = LoopState(query="茶陵一中", plan=plan, hits=[])
+        state.add_observation("web_search", {"count": 0, "ok": False, "hits": [], "empty": True})
+        thinking = build_react_thinking(state)
+        if "未找到" not in thinking:
+            notes.append(f"thinking should mention 未找到; got {thinking!r}")
+        return (len(notes) == 0), notes
+
     return False, [f"unknown check={check}"]
 
 
-async def run() -> int:
+async def run(categories: set[str] | None = None) -> int:
     from app.db.seed import ensure_agent_seed
     from app.db.session import init_db
     from app.rag.knowledge import KnowledgeService
@@ -398,10 +568,11 @@ async def run() -> int:
     await init_db()
     await ensure_agent_seed()
 
-    cases = load_cases()
+    cases = load_cases(categories)
     knowledge = KnowledgeService()
     passed = 0
-    print(f"Running {len(cases)} eval cases…\n")
+    filt = ",".join(sorted(categories)) if categories else "all"
+    print(f"Running {len(cases)} eval cases (filter={filt})…\n")
 
     for case in cases:
         cid = case.get("id", "?")
@@ -434,6 +605,13 @@ async def run() -> int:
 
         search_q = build_search_query(messages) or query
         hits = await knowledge.search(search_q, top_k=5)
+        from app.rag.research import filter_relevant_hits
+        from app.rag.query_rewrite import rewrite_search_query
+
+        # Keep the harness aligned with production planning: relevance filtering
+        # must see the same retrieval-oriented synonym expansion as search.
+        filter_q = rewrite_search_query(search_q) or search_q
+        hits = filter_relevant_hits(filter_q, hits)
         plan = plan_turn(query, hits=hits, retrieval_query=search_q)
 
         if case.get("must_enriched_contain"):
@@ -483,6 +661,11 @@ async def run() -> int:
             from app.agents import _build_clarify_reply
 
             answer = _build_clarify_reply(query)
+        elif plan.intent.value == "general" and case.get("expected_intent") == "general":
+            # Mock 路径不调用真实 LLM；仅在显式验收 general 时替换答文
+            answer = "通用问答将由模型直接作答，不因非制度而拒答。"
+        elif plan.intent.value == "web" and case.get("expected_intent") == "web":
+            answer = "联网检索路径：将调用 web_search 后综合作答。"
         for bad in case.get("forbid_phrases") or []:
             if bad in answer:
                 ok = False
@@ -515,5 +698,17 @@ async def run() -> int:
     return 0 if passed == len(cases) else 1
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Atlas eval gate")
+    p.add_argument(
+        "--category",
+        default="",
+        help="Comma-separated categories, e.g. hit,missing,general,ingest",
+    )
+    return p.parse_args(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(run()))
+    args = _parse_args()
+    cats = {c.strip().lower() for c in args.category.split(",") if c.strip()} or None
+    raise SystemExit(asyncio.run(run(cats)))

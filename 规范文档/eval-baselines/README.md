@@ -1,17 +1,27 @@
-# Eval baselines
+﻿# Eval baselines
 
-记录 `scripts/run_eval.py` 结果，证明优化不是凭感觉。模板见 [03-评测规范.md](../03-评测规范.md)。
+## Phase 0 — 2026-07-21（Harness 锁标准）
 
-| 日期 | git commit | passed/total | 变更说明 |
-|------|------------|--------------|----------|
-| 2026-07-16 | （本地未提交） | 23/23 | T1：差旅制度种子 + 3 金标准；eval 启动 ensure_agent_seed；修复分点正则吞掉金额数字 |
-| 2026-07-16 | （本地未提交） | — | 规范迁入 `规范文档/`；成套冻结，实现待办见 [07](../07-现状差距与实现待办.md) |
-| 2026-07-16 | （本地未提交） | 25/25 | T2：`is_policy_question`；空库禁自动 web/research；制度拒答短路径；+2 评测用例 |
-| 2026-07-16 | （本地未提交） | 50/50 | T3：题库扩至 50（五大类）；制度问「计算公式」不再误走计算器；补贴等关键词补全 |
-| 2026-07-16 | （本地未提交） | 52/52 | T4：policy query rewrite + 引用 document_id；证据见 04 #001 |
-| 2026-07-16 | （本地未提交） | 53/53 | T5：Prompt 版本号 + Trace meta（prompt_versions / top_titles）；T6 暂缓 |
-| 2026-07-16 | （本地未提交） | 55/55 | T4-3：多轮槽位 enrichment；证据见 04 #002 |
-| 2026-07-16 | （本地未提交） | 100/100 | T3b：题库扩至 100；planner 支持 retrieval_query；追问/住宿标准 rewrite 加固 |
-| 2026-07-16 | （本地未提交） | 112/112 | 口语坏例：酒店/房费/出差/行程单 rewrite + planner 对齐；证据见 04 #003 |
-| 2026-07-16 | （本地未提交） | 126/126 | 第二批：宾馆/舱等/超500 + 库外费用 LOCAL 拒答；证据见 04 #004 |
-| 2026-07-16 | （本地未提交） | 126/126 | 性价比：answer_cache + LOCAL 禁工具 LLM + 收紧 wants_online；证据见 04 #005 |
+Command: `python scripts/run_eval.py --category harness`
+
+Result: **7/7 passed**（当时尚未含 `web_empty_honest`）
+
+| Case | Result |
+|------|--------|
+| harness_entity_chaling | PASS |
+| harness_entity_nanya | PASS |
+| harness_clarify_reimburse | PASS |
+| harness_clarify_salary | PASS |
+| harness_web_news_locked | PASS |
+| harness_sanitize_tool_calls | PASS |
+| harness_policy_meal_star | PASS |
+
+## Phase 4 — 2026-07-21（全量冻结）
+
+Command: `python scripts/run_eval.py`
+
+Result: **149/149 passed**
+
+Harness（8/8，含 `harness_web_empty_honest`）全绿；泄漏用例 100% 过；intent 路由相对 Phase 0 不降。
+
+静态资源 cache-bust：`?v=20260721harness1`

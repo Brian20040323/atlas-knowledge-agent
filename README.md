@@ -12,15 +12,16 @@
 - Tool Calling（时间查询、计算器）
 - Mock 模式：无 API Key 也能跑通全流程
 - 静态前端聊天页
-- **SQLite 本地数据库**：会话与消息持久化
+- **私有 SQLite 工作区**：会话、消息和知识库文档按账号隔离
 - **自我学习查阅**：知识库学习 + 检索引用回答
 - **多方面自主学习**：本地不足时从开放百科检索地理/历史/数学/行业等并自动入库
 - **联网查询**：DuckDuckGo 开放网页搜索 + 摘要抓取，用于回答最新/库外问题
 - **深度思考**：先展示推理过程，再输出准确结论
 - **Agent 规划 + ReAct 循环**：意图路由 → 多步工具 → 综合作答（自研轻量实现）
 - **分块检索**：长文档按句切分重叠块再打分（简易 RAG）
-- **混合检索**：关键词 + TF-IDF 余弦（`rag/hybrid.py`）；可选向量检索默认关（P3）
-- **可选知识图谱**：SQLite 实体/关系表 + `search_graph`（P4，默认关；失败不影响文档 RAG）
+- **混合检索**：关键词 + TF-IDF；**Dense+Sparse Hybrid**（FastEmbed/BGE 本地神经向量 + lexical，可切换）
+- **可选知识图谱**：SQLite 实体/关系表 + 子图检索（轻量 GraphRAG）
+- **压测**：Locust 脚本 + `docs/LOAD_TEST.md`（QPS / P95；原始报告本地生成）
 - **可观测性**：每轮 Agent Trace（耗时 / spans），`GET /api/runs`
 - **评测集**：`scripts/run_eval.py` + `backend/tests/eval/cases.yaml`（含向量/图谱开关用例）
 - **会话历史侧栏**：切换最近对话
@@ -46,7 +47,7 @@
 ## 快速启动
 
 ```powershell
-cd "C:\Users\czy2004\Desktop\AI 全栈开发"
+cd <REPO_ROOT>
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r backend\requirements.txt
@@ -63,11 +64,18 @@ python run.py
 ```env
 LLM_API_KEY=你的密钥
 LLM_BASE_URL=https://api.deepseek.com/v1
-LLM_MODEL=deepseek-chat
+LLM_MODEL=deepseek-v4-flash
 MOCK_MODE=auto
 ```
 
 性价比建议用 DeepSeek（兼容 OpenAI 接口）。也可换成 OpenAI / 通义等。`MOCK_MODE=auto` 时：有 Key 走真实 LLM，无 Key 自动 Mock。
+
+## 账号与访问边界
+
+- `ATLAS_USER_AUTH=true`（默认）：注册并登录后使用；对话和知识库文档仅本人可见。
+- `ATLAS_REGISTER_SECRET`：非空时，注册必须填写邀请码。
+- `ATLAS_PUBLIC_PASSWORD`：为公网演示增加站点口令；它不能替代账号登录。
+- 默认仅允许同源浏览器请求。如有独立前端，在 `CORS_ORIGINS` 填写允许的完整来源（逗号分隔）。
 
 ## 数据库（SQLite）
 
@@ -88,7 +96,7 @@ DATABASE_URL=sqlite+aiosqlite:///C:/path/to/app.db
 
 ### 自我学习查阅
 
-1. **学习知识**（任选一种）：
+1. **学习知识**（仅当前登录账号可见，任选一种）：
    - 对话：`记住：FastAPI入门|FastAPI 是 Python 异步 Web 框架`
    - **自主学习**：`自主学习：工业革命`（多方面检索百科并写入知识库）
    - **联网查询**：`联网：今天科技新闻` / 问题中含「最新、搜索」时自动联网
@@ -102,8 +110,16 @@ DATABASE_URL=sqlite+aiosqlite:///C:/path/to/app.db
    - 有库内证据才断言；不足处明确说明并提示学习 / 联网
    - 资源上限见 `.env.example`（`UPLOAD_MAX_MB` / `DOC_MAX_CHARS` / `RAG_*` / `AGENT_MAX_STEPS`）
    - P2 可观测与限流：`HTTP_TIMEOUT_*` / `LLM_TIMEOUT_SECONDS` / `MAX_CONCURRENT_CHATS` / `WEB_CIRCUIT_FAIL_THRESHOLD`；`GET /api/runs` 可查检索与工具 spans，超额并发返回 429
-   - P3 可选向量（默认关）：`RAG_VECTOR_ENABLED=false` 走 TF-IDF；设为 `true` 启用本地向量索引（`data/vector_index`），`RAG_EMBEDDING_PROVIDER=hash|openai`
-  - P4 可选图谱（默认关）：`RAG_GRAPH_ENABLED=false`；开启后规则抽取写入 `graph_*` 表，工具/API `search_graph` / `GET /api/knowledge/graph`；关闭或失败时仅文档 RAG
+  - P3 向量检索（默认关闭）：设置 `RAG_VECTOR_ENABLED=true` 后走 **Dense+Sparse Hybrid**（本地向量索引 + lexical/TF-IDF）。推荐 `RAG_EMBEDDING_PROVIDER=fastembed` + `BAAI/bge-small-zh-v1.5`；首次启动会下载模型。观测：`GET /api/knowledge/retrieval-meta`，重建索引：`POST /api/knowledge/reindex`
+  - P4 图谱默认关闭；私有知识库模式下不启用，以避免跨账号图谱泄露。
+
+### 压测（Locust）
+
+```powershell
+.\.venv\Scripts\python.exe -m locust -f scripts\locustfile.py --headless -u 20 -r 5 -t 30s --host http://127.0.0.1:8000 --csv docs\locust --html docs\locust_report.html
+```
+
+最近一次本地结果（20 并发 / 30s，失败率 0%）：检索接口约 **9.2 QPS**，P95≈**740ms**。详见 [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md)；HTML/CSV 原始报告由命令在本地生成，不纳入版本库。
 
 3. **语音**：
    - 麦克风：浏览器语音识别（Chrome/Edge，需授权）
@@ -191,12 +207,21 @@ AI 全栈开发/
 │   └── rag/             # 分块 / hybrid / 向量 / 图谱
 ├── data/
 │   └── app.db           # SQLite（含可选 graph_* 表）
-├── docs/                # 工程规范与迭代计划
+├── 规范文档/            # 唯一规范源（架构、评测、变更记录）
+├── docs/                # 旧规范重定向 + 运维说明（如压测）
 ├── scripts/             # run_eval / demo_scenarios / mcp
 ├── frontend/            # 聊天 UI
 ├── run.py               # 一键启动
+├── skills/               # 可版本化的评测、诊断与配置检查 Skills
 └── .env.example
 ```
+
+## 项目 Skills
+
+- `skills/atlas-eval-gate`：Agent、RAG、Prompt 改动后的评测门禁。
+- `skills/atlas-rag-diagnose`：在当前账号范围内定位导入、检索和 Trace 问题。
+- `skills/atlas-config-drift`：发布前核对代码默认值、示例环境、CI 与文档。
+- `.cursor/skills/atlas-policy-selftest`：制度导入 L0–L5 分层验收。
 
 ## 下一步可扩展（规范主线 P0–P4 已落地）
 

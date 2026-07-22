@@ -189,9 +189,11 @@ cases:
   - id: oos_poem
     category: oos
     query: 写一首关于春天的诗
-    expected_intent: research
-    must_plan_step: research_topics
-    notes: "超范围：不走制度 LOCAL；允许 research，但不得伪称制度"
+    expected_intent: general
+    must_not_plan_step: search_knowledge
+    must_answer_contain_any: ["通用", "模型"]
+    forbid_phrases: ["制度依据", "本公司规定"]
+    notes: "创意写作走 general，不伪称制度；不再强制 research"
 
   - id: oos_other_company
     category: oos
@@ -879,7 +881,7 @@ cases:
 
   - id: missing_taxi_fare
     category: missing
-    query: 打车费能报吗ZXQTAXI001
+    query: 报销ZXQTAXI001虚构网约车津贴额度是多少
     expected_intent: local
     expect_max_hits: 0
     must_answer_contain_any: ["不足以", "暂无", "补充"]
@@ -931,3 +933,119 @@ cases:
     must_answer_contain_any: ["哪一块", "基本工资", "绩效"]
     forbid_phrases: ["不足以", "本轮使用了联网检索", "500"]
     notes: "短问澄清：不编制度数字"
+
+  # --- T10 能力锁：通用问答 / 联网路由 / 导入 / 删除会话 ---
+  - id: general_math_route
+    category: general
+    query: 能不能帮忙解决高数题目
+    expected_intent: general
+    must_not_plan_step: research_topics
+    must_answer_contain_any: ["通用", "模型", "作答"]
+    forbid_phrases: ["只答制度", "无法协助", "不具备", "【直接回答】"]
+    notes: "非制度题不得拒答式路由；Mock 验路由文案"
+
+  - id: general_calculus_def
+    category: general
+    query: 帮我讲一下微积分里导数的定义
+    expected_intent: general
+    must_answer_contain_any: ["通用", "模型"]
+    forbid_phrases: ["不足以完整回答", "只答制度"]
+
+  - id: web_news_route
+    category: web
+    query: 查看今日时事新闻
+    expected_intent: web
+    must_plan_step: web_search
+    forbid_phrases: ["【直接回答】"]
+    notes: "时事新闻必须走联网计划"
+
+  - id: web_explicit_prefix
+    category: web
+    query: 联网：今天有哪些科技新闻
+    expected_intent: web
+    must_plan_step: web_search
+
+  - id: policy_still_local_refuse_empty
+    category: missing
+    query: 报销ZXQPOLICY999虚拟专项的额度是多少
+    expected_intent: local
+    expect_max_hits: 0
+    must_answer_contain_any: ["不足以", "补充", "制度"]
+    forbid_phrases: ["本轮使用了联网检索"]
+    notes: "制度意图空库仍拒答，不编造；query 含报销但无命中条款"
+
+  - id: ingest_docx
+    category: ingest
+    check: ingest_docx
+
+  - id: ingest_xlsx
+    category: ingest
+    check: ingest_xlsx
+
+  - id: ingest_html
+    category: ingest
+    check: ingest_html
+
+  - id: ingest_allowed_ext
+    category: ingest
+    check: ingest_allowed_ext
+
+  - id: crud_delete_conversation
+    category: crud
+    check: delete_conversation
+
+  - id: model_route_policy_vs_complex
+    category: general
+    check: model_route_select
+
+  # --- Harness Phase 0：实体 / 澄清 / 泄漏 / 联网路由锁 ---
+  - id: harness_entity_chaling
+    category: harness
+    query: 茶陵一中
+    expected_intent: web
+    must_plan_step: web_search
+    forbid_phrases: ["规定条款", "额度标准", "适用人群", "操作流程"]
+    notes: "实体短问不得制度澄清"
+
+  - id: harness_entity_nanya
+    category: harness
+    query: 南雅中学
+    expected_intent: web
+    must_plan_step: web_search
+    forbid_phrases: ["规定条款", "额度标准", "适用人群"]
+
+  - id: harness_clarify_reimburse
+    category: harness
+    query: 报销
+    expected_intent: clarify
+    must_answer_contain_any: ["哪一块", "差旅报销", "日常费用"]
+    forbid_phrases: ["不足以", "本轮使用了联网检索", "500"]
+
+  - id: harness_clarify_salary
+    category: harness
+    query: 薪资
+    expected_intent: clarify
+    must_answer_contain_any: ["哪一块", "基本工资"]
+
+  - id: harness_web_news_locked
+    category: harness
+    query: 联网搜索 茶陵一中 最新新闻
+    expected_intent: web
+    must_plan_step: web_search
+    forbid_phrases: ["tool_calls", "DSML", "invoke name"]
+
+  - id: harness_sanitize_tool_calls
+    category: harness
+    check: sanitize_tool_leak
+
+  - id: harness_web_empty_honest
+    category: harness
+    check: web_empty_honest
+
+  - id: harness_policy_meal_star
+    category: harness
+    query: 差旅住宿费上限是多少？
+    expected_intent: local
+    must_hit_title_any: ["差旅报销"]
+    must_answer_contain_all: ["500"]
+    forbid_phrases: ["tool_calls", "invoke name", "【直接回答】"]

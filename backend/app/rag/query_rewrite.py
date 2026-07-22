@@ -64,6 +64,15 @@ def rewrite_search_query(query: str) -> str:
     if "单据" in out:
         out = out.replace("单据", "附件", 1)
 
+    # 报销提交时限与预借款核销都可能包含「出差结束后」，必须补充
+    # 「提交/逾期/受理」语义，避免检索误把 7 日借款核销当作报销时限。
+    asks_reimbursement_deadline = (
+        ("出差结束" in out and "报销" in out and any(k in out for k in ("多久", "几天", "期限", "时限")))
+        or any(k in out for k in ("不再受理", "逾期受理", "报销时限"))
+    )
+    if asks_reimbursement_deadline:
+        out = f"{out} 报销时限 提交 逾期 受理"
+
     # 「超过500」「超了500」→ 住宿超标准
     if re.search(r"超过?\s*500|超了\s*500", out) and "差旅" not in out:
         out = f"差旅报销 住宿费 超标准 {out}"

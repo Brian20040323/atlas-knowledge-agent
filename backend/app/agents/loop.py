@@ -26,6 +26,7 @@ class LoopState:
 
     query: str
     plan: AgentPlan
+    user_id: int | None = None
     observations: list[dict[str, Any]] = field(default_factory=list)
     hits: list[dict[str, Any]] = field(default_factory=list)
     researched: bool = False
@@ -135,7 +136,7 @@ async def run_react_retrieval(
                 tasks.append(
                     run_tool(
                         "research_topics",
-                        {"query": state.query, "max_pages": 2, "auto_save": True},
+                        {"query": state.query, "max_pages": 2, "auto_save": False},
                     )
                 )
                 names.append("research_topics")
@@ -196,7 +197,10 @@ async def run_react_retrieval(
         if step == "search_knowledge":
             yield {"type": "tool_start", "name": "search_knowledge"}
             t0 = time.perf_counter()
-            raw = await run_tool("search_knowledge", {"query": state.query, "top_k": 5})
+            raw = await run_tool(
+                "search_knowledge",
+                {"query": state.query, "top_k": 5, "user_id": state.user_id},
+            )
             yield {"type": "tool_result", "name": "search_knowledge", "content": raw}
             data = _loads(raw)
             local_hits = data.get("results") or []
@@ -221,7 +225,7 @@ async def run_react_retrieval(
             t0 = time.perf_counter()
             raw = await run_tool(
                 "research_topics",
-                {"query": state.query, "max_pages": 2, "auto_save": True},
+                {"query": state.query, "max_pages": 2, "auto_save": False},
             )
             yield {"type": "tool_result", "name": "research_topics", "content": raw}
             data = _loads(raw)
@@ -276,7 +280,10 @@ async def run_react_retrieval(
         elif step == "learn_knowledge" and state.plan.learn_payload:
             title, content = state.plan.learn_payload
             yield {"type": "tool_start", "name": "learn_knowledge"}
-            raw = await run_tool("learn_knowledge", {"title": title, "content": content})
+            raw = await run_tool(
+                "learn_knowledge",
+                {"title": title, "content": content, "user_id": state.user_id},
+            )
             yield {"type": "tool_result", "name": "learn_knowledge", "content": raw}
             state.add_observation("learn_knowledge", _loads(raw))
             state.answer_hint = "learn"
@@ -341,15 +348,29 @@ def build_react_thinking(state: LoopState) -> str:
         f"意图：{state.plan.intent.value}｜问题：{state.query[:80]}",
         f"计划：{' → '.join(state.plan.steps)}",
     ]
-    for obs in state.observations[:4]:
+    web_empty = False
+    for obs in state.observations[:6]:
         tool = obs.get("tool")
         content = obs.get("content")
         if isinstance(content, dict):
-            summary = json.dumps(content, ensure_ascii=False)[:80]
+            if tool in {"web_search", "optional_web_search"}:
+                count = int(content.get("count") or 0)
+                if content.get("skipped"):
+                    lines.append(f"→ 联网检索跳过（{content.get('reason') or '熔断'}）")
+                elif count == 0:
+                    web_empty = True
+                    lines.append("→ 联网检索：未找到可用公开结果")
+                else:
+                    lines.append(f"→ 联网检索：找到 {count} 条")
+            else:
+                summary = json.dumps(content, ensure_ascii=False)[:80]
+                lines.append(f"{tool} → {summary}")
         else:
-            summary = str(content)[:80]
-        lines.append(f"{tool} → {summary}")
+            lines.append(f"{tool} → {str(content)[:80]}")
     if state.circuit and state.circuit.opened:
         lines.append(f"外网熔断已开启（连续失败 {state.circuit.fail_streak}）→ 仅用本地材料。")
-    lines.append(f"材料 {len(state.hits)} 条 → 综合改写为面向问题的回答。")
+    if web_empty and not state.hits:
+        lines.append("材料不足 → 如实说明未找到，禁止编造具体办学/机构数据。")
+    else:
+        lines.append(f"材料 {len(state.hits)} 条 → 综合改写为面向问题的回答。")
     return "\n".join(lines)

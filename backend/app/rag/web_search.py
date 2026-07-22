@@ -208,6 +208,46 @@ async def _ddg_package(
         raise
 
 
+async def _wikipedia_zh(query: str) -> list[dict[str, str]]:
+    """Chinese Wikipedia opensearch — reliable fallback when DDG/Bing are empty."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"}
+    timeout = max(10.0, float(get_settings().http_timeout_web))
+    out: list[dict[str, str]] = []
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
+        resp = await client.get(
+            "https://zh.wikipedia.org/w/api.php",
+            params={
+                "action": "opensearch",
+                "search": q,
+                "limit": 4,
+                "namespace": 0,
+                "format": "json",
+            },
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        # [query, [titles], [descs], [urls]]
+        if not isinstance(data, list) or len(data) < 4:
+            return []
+        titles, descs, urls = data[1], data[2], data[3]
+        for title, desc, url in zip(titles, descs, urls):
+            if not url:
+                continue
+            out.append(
+                {
+                    "title": str(title)[:200],
+                    "url": str(url),
+                    "snippet": (str(desc) or str(title))[:500],
+                    "source": "wikipedia_zh",
+                }
+            )
+    return out
+
+
 async def _html_fallback_search(query: str, max_results: int = 6) -> list[dict[str, str]]:
     """不依赖 ddgs 线程池：Bing HTML + DDG HTML 兜底。"""
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
@@ -345,18 +385,23 @@ async def search_web(
     search_q = q
     is_news = any(k in q for k in ("新闻", "时事", "今日", "今天", "最新", "热点", "头条"))
     is_tech = any(k in q for k in ("科技", "数码", "互联网", "AI", "人工智能"))
+    is_school = any(
+        k in q for k in ("大学", "学院", "学校", "中学", "一中", "二中", "小学", "高中", "初中")
+    )
     if any(k in q for k in ("是什么", "什么是", "简介")) and len(q) < 40:
         search_q = f"{q} 百科"
     if any(k in q for k in ("就业", "去向", "毕业生", "录取")):
         search_q = f"{q} 就业 毕业生 去向"
-    elif any(k in q for k in ("大学", "学院", "学校")):
-        search_q = f"{q} 简介"
+    elif is_school:
+        search_q = f"{q} 简介 官网"
     elif is_news and is_tech:
         search_q = "科技新闻 今日 资讯"
     elif is_news:
         search_q = "今日时事新闻 热点"
 
     queries = [search_q]
+    if is_school:
+        queries.extend([f"{q} 百度百科", q, f"{q} 学校"])
     if is_news:
         queries.append("today world news" if not is_tech else "today technology news")
         if search_q != q:
@@ -406,6 +451,14 @@ async def search_web(
                     results.append(item)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"instant: {type(exc).__name__}: {exc}")
+
+    if len(results) < 2:
+        try:
+            for item in await _wikipedia_zh(q):
+                if item["url"] not in {r["url"] for r in results}:
+                    results.append(item)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"wikipedia: {type(exc).__name__}: {exc}")
 
     results.sort(
         key=lambda r: -(
@@ -469,7 +522,7 @@ async def search_web(
         if len(hits) >= max_results:
             break
 
-    out = {
+    out: dict[str, Any] = {
         "ok": bool(hits),
         "query": q,
         "results": results[:max_results],
@@ -478,6 +531,12 @@ async def search_web(
         "errors": errors,
         "search_url": f"https://duckduckgo.com/?q={quote_plus(search_q)}",
     }
+    if not hits:
+        out["empty"] = True
+        out["honest_message"] = (
+            f"联网检索未找到与「{q}」相关的可靠公开结果，材料不足，"
+            "请勿编造具体办学数据；可建议用户补充全称或官网。"
+        )
     # 仅缓存成功结果，避免空结果把服务进程锁死数分钟
     if hits:
         _CACHE[cache_key] = (time.time(), out)

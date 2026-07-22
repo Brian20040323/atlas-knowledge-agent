@@ -51,19 +51,25 @@ def calculator(expression: str) -> str:
     return json.dumps({"expression": expression, "result": result}, ensure_ascii=False)
 
 
-async def search_knowledge(query: str, top_k: int = 3) -> str:
+async def search_knowledge(
+    query: str, top_k: int = 6, user_id: int | None = None
+) -> str:
     """Search the self-learned knowledge base."""
     settings = get_settings()
     hits = await _knowledge.search(
-        query, top_k=max(1, min(int(top_k or 3), int(settings.rag_top_k_max)))
+        query,
+        top_k=max(1, min(int(top_k or 3), int(settings.rag_top_k_max))),
+        user_id=user_id,
     )
     return json.dumps({"query": query, "results": hits, "count": len(hits)}, ensure_ascii=False)
 
 
-async def learn_knowledge(title: str, content: str) -> str:
+async def learn_knowledge(
+    title: str, content: str, user_id: int | None = None
+) -> str:
     """Save new knowledge into the local knowledge base."""
     try:
-        saved = await _knowledge.learn(title, content)
+        saved = await _knowledge.learn(title, content, user_id=user_id)
     except IngestLimitError as exc:
         return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
     return json.dumps(
@@ -72,7 +78,7 @@ async def learn_knowledge(title: str, content: str) -> str:
     )
 
 
-async def research_topics(query: str, max_pages: int = 5, auto_save: bool = True) -> str:
+async def research_topics(query: str, max_pages: int = 5, auto_save: bool = False) -> str:
     """Multi-aspect encyclopedia research and optional auto-learn into KB."""
     result = await research_and_learn(
         query,
@@ -191,7 +197,7 @@ TOOL_SPECS = [
                     "auto_save": {
                         "type": "boolean",
                         "description": "是否自动写入知识库",
-                        "default": True,
+                        "default": False,
                     },
                 },
                 "required": ["query"],
