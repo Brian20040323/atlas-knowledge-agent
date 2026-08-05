@@ -53,3 +53,14 @@ docs/locust*.txt
 docs/locust*.html
 docs/reports/
 
+
+# Unrelated local artifacts
+*.pptx
+*.docx
+.superpowers/
+shengxue-invitation/
+_data_sample_charts/
+_export_*.py
+_export_*.ps1
+_build_*.py
+Q-Trend*

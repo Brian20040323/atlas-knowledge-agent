@@ -208,6 +208,11 @@ class KnowledgeService:
         with score_ctx as score_span:
             # TF-IDF, FastEmbed and JSON index work are synchronous. Keep them
             # off FastAPI's event loop so concurrent SSE chats remain responsive.
+            rank_uid = (
+                int(user_id)
+                if user_id is not None and int(user_id) > 0
+                else None
+            )
             results = await asyncio.to_thread(
                 retriever.rank,
                 query,
@@ -218,6 +223,7 @@ class KnowledgeService:
                 max_chunks=max_chunks,
                 settings=settings,
                 lexical_scorer=_score,
+                user_id=rank_uid,
             )
 
             # Composer 附加文档：强制注入本轮优先文档的最佳片段，避免被差旅等旧库顶掉

@@ -467,6 +467,10 @@ function createAgentTrail(beforeEl) {
   const wrap = document.createElement("div");
   wrap.className = "agent-trail";
   wrap.setAttribute("aria-label", "Agent activity");
+  wrap.innerHTML =
+    `<div class="trail-steps"></div>` +
+    `<div class="run-graph" hidden></div>` +
+    `<div class="run-graph-detail" hidden></div>`;
   insertBeforeAnswer(wrap, beforeEl);
   scrollToBottom();
   return wrap;
@@ -474,12 +478,13 @@ function createAgentTrail(beforeEl) {
 
 function upsertTrailStep(trail, key, { label, status }) {
   if (!trail) return;
+  const host = trail.querySelector(".trail-steps") || trail;
   const safeKey = String(key || "step");
   let item = null;
   try {
-    item = trail.querySelector(`[data-key="${CSS.escape(safeKey)}"]`);
+    item = host.querySelector(`[data-key="${CSS.escape(safeKey)}"]`);
   } catch {
-    item = Array.from(trail.querySelectorAll(".trail-step")).find(
+    item = Array.from(host.querySelectorAll(".trail-step")).find(
       (el) => el.dataset.key === safeKey
     );
   }
@@ -491,12 +496,151 @@ function upsertTrailStep(trail, key, { label, status }) {
       `<span class="trail-dot" aria-hidden="true"></span>` +
       `<span class="trail-tool"></span>` +
       `<span class="trail-label"></span>`;
-    trail.appendChild(item);
+    host.appendChild(item);
   }
   item.dataset.status = status || "running";
   item.querySelector(".trail-tool").textContent = safeKey;
   item.querySelector(".trail-label").textContent = label || "";
   scrollToBottom();
+}
+
+function stageForNodeType(t) {
+  if (t === "input" || t === "start") return "input";
+  if (t === "plan" || t === "guard") return "reason";
+  if (t === "tool" || t === "retrieve" || t === "step" || t === "span") return "execute";
+  return "answer";
+}
+
+function normalizeClientGraph(graph) {
+  if (!graph || !Array.isArray(graph.nodes) || !graph.nodes.length) return null;
+  const nodes = graph.nodes.map((n, i) => {
+    let type = n.type || "step";
+    if (type === "start") type = "input";
+    if (type === "final" || type === "llm") type = type === "final" ? "answer" : "step";
+    let status = n.status || "success";
+    if (status === "ok" || status === "done") status = "success";
+    if (status === "fail") status = "error";
+    const stage = ["input", "reason", "execute", "answer"].includes(n.stage)
+      ? n.stage
+      : stageForNodeType(type);
+    return {
+      ...n,
+      id: n.id || `n${i}`,
+      type,
+      stage,
+      status,
+      duration_ms: n.duration_ms != null ? n.duration_ms : n.ms,
+      label: n.label || n.id || `n${i}`,
+    };
+  });
+  const ids = new Set(nodes.map((n) => n.id));
+  const edges = (graph.edges || [])
+    .map((e) => {
+      if (Array.isArray(e) && e.length >= 2) {
+        return { source: e[0], target: e[1], relation: "sequence" };
+      }
+      return {
+        source: e.source,
+        target: e.target,
+        relation: e.relation || "sequence",
+      };
+    })
+    .filter((e) => ids.has(e.source) && ids.has(e.target));
+  const toolCount =
+    graph.summary?.tool_count ??
+    nodes.filter((n) => n.type === "tool" || n.type === "retrieve").length;
+  const failed =
+    graph.summary?.failed_count ?? nodes.filter((n) => n.status === "error").length;
+  return {
+    schema_version: "1.0",
+    run: {
+      id: graph.run?.id || graph.run_id || "",
+      status: graph.run?.status || (failed ? "error" : "success"),
+      duration_ms: graph.run?.duration_ms ?? graph.duration_ms,
+      stop_reason: graph.run?.stop_reason || graph.mode || "",
+    },
+    summary: { tool_count: toolCount, failed_count: failed },
+    nodes,
+    edges,
+  };
+}
+
+function renderRunGraph(host, graph, { selectable = true } = {}) {
+  const g = normalizeClientGraph(graph);
+  if (!host || !g) return;
+  const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+  const stageOrder = ["input", "reason", "execute", "answer"];
+  const stageLabel = { input: "Input", reason: "Reason", execute: "Execute", answer: "Answer" };
+  const buckets = { input: [], reason: [], execute: [], answer: [] };
+  for (const n of g.nodes) {
+    const s = stageOrder.includes(n.stage) ? n.stage : stageForNodeType(n.type);
+    buckets[s].push(n);
+  }
+  const statusClass = g.run.status === "error" ? "err" : "ok";
+  const stagesHtml = stageOrder
+    .filter((sid) => buckets[sid].length)
+    .map((sid) => {
+      const nodes = buckets[sid];
+      const parallel =
+        sid === "execute" && nodes.length > 1 && nodes.some((n) => n.group_id);
+      const nodeHtml = nodes
+        .map((n) => {
+          const ms =
+            n.duration_ms != null && n.duration_ms !== ""
+              ? `<span class="rg-ms">${escapeHtml(String(n.duration_ms))}ms</span>`
+              : "";
+          return `<button type="button" class="rg-node" data-id="${escapeHtml(n.id)}" data-type="${escapeHtml(n.type || "")}" data-status="${escapeHtml(n.status || "")}">
+            <span class="rg-type">${escapeHtml(n.type || "node")}</span>
+            <span class="rg-label">${escapeHtml(String(n.label || n.id).slice(0, 80))}</span>
+            ${ms}
+          </button>`;
+        })
+        .join("");
+      return `<div class="rg-stage">
+        <div class="rg-stage-name">${escapeHtml(stageLabel[sid])}</div>
+        <div class="rg-stage-nodes ${parallel ? "parallel" : ""}">${nodeHtml}</div>
+      </div>`;
+    })
+    .join("");
+
+  host.hidden = false;
+  host.innerHTML = `
+    <div class="rg-metrics">
+      <span class="rg-metric ${statusClass}">${escapeHtml(g.run.status || "—")}</span>
+      <span class="rg-metric">${escapeHtml(String(g.summary.tool_count))} tools</span>
+      <span class="rg-metric">${escapeHtml(String(g.summary.failed_count))} failed</span>
+      <span class="rg-metric">${escapeHtml(String(g.run.duration_ms ?? "—"))}ms</span>
+      <span class="rg-metric">${escapeHtml(g.run.stop_reason || "—")}</span>
+    </div>
+    <div class="rg-stages">${stagesHtml}</div>
+  `;
+
+  if (!selectable) return;
+  const detail =
+    host.parentElement?.querySelector?.(".run-graph-detail") ||
+    host.nextElementSibling;
+  const show = (id) => {
+    host.querySelectorAll(".rg-node").forEach((el) => {
+      el.classList.toggle("active", el.dataset.id === id);
+    });
+    const n = byId[id];
+    if (!detail || !n) return;
+    detail.hidden = false;
+    const d = n.detail && typeof n.detail === "object" ? n.detail : {};
+    const lines = [];
+    if (d.query_summary) lines.push(`query: ${d.query_summary}`);
+    if (d.result_count != null) lines.push(`result_count: ${d.result_count}`);
+    if (d.model) lines.push(`model: ${d.model}`);
+    if (d.fallback != null) lines.push(`fallback: ${d.fallback}`);
+    if (d.error_type) lines.push(`error_type: ${d.error_type}`);
+    if (!lines.length) lines.push(n.label || "");
+    detail.innerHTML =
+      `<div class="rg-detail-head">${escapeHtml(n.type || "")} · ${escapeHtml(String(n.label || id).slice(0, 60))}</div>` +
+      `<pre>${escapeHtml(lines.join("\n").slice(0, 1200))}</pre>`;
+  };
+  host.querySelectorAll(".rg-node").forEach((el) => {
+    el.addEventListener("click", () => show(el.dataset.id));
+  });
 }
 
 function clearChat() {
@@ -1212,7 +1356,13 @@ async function streamChat(userText) {
         setPetStatus("规划中", "busy");
         setPetAgent("retrieve", "running");
       } else if (event === "trace") {
-        /* keep in Thought only */
+        const tr = payload.trace || payload;
+        const graph = tr.graph;
+        if (graph && graph.nodes && graph.nodes.length) {
+          if (!agentTrail) agentTrail = createAgentTrail(botEl);
+          const graphEl = agentTrail.querySelector(".run-graph");
+          if (graphEl) renderRunGraph(graphEl, graph);
+        }
       } else if (event === "rag_context") {
         const hits = payload.hits || [];
         hadHits = hits.length > 0;
@@ -2498,9 +2648,9 @@ async function openTraceModal() {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   overlay.innerHTML = `
-    <div class="modal">
+    <div class="modal modal-wide">
       <div class="modal-head">
-        <span>最近运行记录</span>
+        <span>最近运行 · 执行图</span>
         <button id="closeTrace">✕</button>
       </div>
       <div class="modal-body" id="traceBody">加载中…</div>
@@ -2513,22 +2663,57 @@ async function openTraceModal() {
   const body = overlay.querySelector("#traceBody");
   try {
     const res = await apiFetch("/api/runs");
-    const runs = await res.json();
-    if (!runs || !runs.length) {
+    const data = await res.json();
+    const runs = Array.isArray(data) ? data : data.runs || [];
+    if (!runs.length) {
       body.innerHTML = '<div class="ti-empty">暂无运行记录</div>';
       return;
     }
-    body.innerHTML = runs.slice(0, 12).map((r, i) => {
-      const spans = (r.spans || []).map(s =>
-        `<span>${s.name} ${s.duration_ms || "?"}ms</span>`
-      ).join("");
-      const modeTag = r.mode ? ` · ${r.mode}` : "";
-      return `<div class="trace-item" style="animation-delay:${i*30}ms">
-        <div class="ti-head"><span class="ti-intent">${r.intent || "?"}${modeTag}</span><span class="ti-meta">${r.duration_ms || "?"}ms · ${r.run_id || ""}</span></div>
+    body.innerHTML = runs
+      .slice(0, 12)
+      .map((r, i) => {
+        const modeTag = r.mode ? ` · ${r.mode}` : "";
+        const rid = escapeHtml(r.run_id || String(i));
+        return `<div class="trace-item" data-run-id="${rid}" style="animation-delay:${i * 30}ms">
+        <div class="ti-head"><span class="ti-intent">${escapeHtml(r.intent || "?")}${escapeHtml(modeTag)}</span><span class="ti-meta">${escapeHtml(String(r.duration_ms ?? "?"))}ms · ${rid}</span></div>
         <div class="ti-query">${escapeHtml((r.query || "").slice(0, 80))}</div>
-        <div class="ti-spans">${spans || "无记录"}</div>
+        <div class="run-graph ti-graph" data-graph-host></div>
+        <div class="run-graph-detail" hidden></div>
       </div>`;
-    }).join("");
+      })
+      .join("");
+
+    body.querySelectorAll(".trace-item").forEach((el, idx) => {
+      const r = runs[idx];
+      const host = el.querySelector("[data-graph-host]");
+      const graph =
+        r.graph && r.graph.nodes
+          ? r.graph
+          : {
+              run_id: r.run_id,
+              nodes: [
+                { id: "q", type: "start", label: (r.query || "").slice(0, 80) },
+                ...(r.intent
+                  ? [{ id: "intent", type: "plan", label: r.intent }]
+                  : []),
+                ...(r.spans || []).map((s, i) => ({
+                  id: `s${i}`,
+                  type: "span",
+                  label: s.name,
+                  ms: s.duration_ms,
+                  status: s.error ? "fail" : "ok",
+                  detail: s.error || s.meta,
+                })),
+                { id: "final", type: "final", label: r.mode || "done" },
+              ],
+              edges: [],
+            };
+        if (!graph.edges || !graph.edges.length) {
+          const ids = graph.nodes.map((n) => n.id);
+          graph.edges = ids.slice(0, -1).map((_, i) => [ids[i], ids[i + 1]]);
+        }
+      if (host) renderRunGraph(host, graph);
+    });
   } catch {
     body.innerHTML = '<div class="ti-empty">无法加载运行记录</div>';
   }

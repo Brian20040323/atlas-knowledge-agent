@@ -1,4 +1,11 @@
-"""Local on-disk vector index for optional P3 retrieval (JSON, no FAISS/GPU)."""
+"""Local on-disk vector index for optional P3 retrieval (JSON, no FAISS/GPU).
+
+Indexes are partitioned by scope so private-user corpora never share the same
+on-disk directory or dirty flag:
+
+- ``shared`` — auth off / anonymous knowledge
+- ``user-{id}`` — per-login private knowledge
+"""
 
 from __future__ import annotations
 
@@ -14,23 +21,64 @@ from app.config import ROOT_DIR
 from app.rag.embeddings import EmbeddingBackend, get_embedding_backend
 from app.rag.chunking import chunk_text
 
-_INDEX_LOCK = threading.Lock()
-_DIRTY = True  # force rebuild after process start / learn
+SHARED_SCOPE = "shared"
+
+_LOCKS: dict[str, threading.Lock] = {}
+_DIRTY: dict[str, bool] = {}
+_REGISTRY_LOCK = threading.Lock()
 
 
-def mark_vector_index_dirty() -> None:
-    """Invalidate cached index (call after learn / ingest)."""
-    global _DIRTY
-    with _INDEX_LOCK:
-        _DIRTY = True
+def index_scope_key(user_id: int | None = None) -> str:
+    """Stable scope name for on-disk index partition."""
+    if user_id is None:
+        return SHARED_SCOPE
+    return f"user-{int(user_id)}"
 
 
-def default_index_dir(configured: str = "") -> Path:
+def _lock_for(scope: str) -> threading.Lock:
+    with _REGISTRY_LOCK:
+        lock = _LOCKS.get(scope)
+        if lock is None:
+            lock = threading.Lock()
+            _LOCKS[scope] = lock
+        return lock
+
+
+def _is_dirty(scope: str) -> bool:
+    with _REGISTRY_LOCK:
+        # Unknown scopes start dirty so first ensure rebuilds after process start.
+        return _DIRTY.get(scope, True)
+
+
+def _set_dirty(scope: str, value: bool) -> None:
+    with _REGISTRY_LOCK:
+        _DIRTY[scope] = value
+
+
+def mark_vector_index_dirty(user_id: int | None = None) -> None:
+    """Invalidate cached index for a user scope and shared (auth-toggle safe).
+
+    Always dirties ``shared`` so flipping ``ATLAS_USER_AUTH`` does not serve a
+    stale aggregate index. When ``user_id`` is set, also dirties that user scope.
+    """
+    scopes = {SHARED_SCOPE}
+    if user_id is not None:
+        scopes.add(index_scope_key(user_id))
+    for scope in scopes:
+        # Take the per-scope lock so a concurrent ensure cannot clear dirty mid-write.
+        with _lock_for(scope):
+            _set_dirty(scope, True)
+
+
+def default_index_dir(configured: str = "", *, scope: str = SHARED_SCOPE) -> Path:
     raw = (configured or "").strip()
     if raw:
         p = Path(raw)
-        return p if p.is_absolute() else (ROOT_DIR / p)
-    return ROOT_DIR / "data" / "vector_index"
+        base = p if p.is_absolute() else (ROOT_DIR / p)
+    else:
+        base = ROOT_DIR / "data" / "vector_index"
+    safe = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in (scope or SHARED_SCOPE))
+    return base / (safe or SHARED_SCOPE)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -66,11 +114,12 @@ class VectorChunk:
 
 
 class LocalVectorIndex:
-    """Persist chunk embeddings under data/vector_index/ (pure JSON)."""
+    """Persist chunk embeddings under data/vector_index/<scope>/ (pure JSON)."""
 
-    def __init__(self, index_dir: Path, backend: EmbeddingBackend) -> None:
+    def __init__(self, index_dir: Path, backend: EmbeddingBackend, *, scope: str = SHARED_SCOPE) -> None:
         self.index_dir = index_dir
         self.backend = backend
+        self.scope = scope or SHARED_SCOPE
         self.chunks: list[VectorChunk] = []
         self.fingerprint: str = ""
         self.provider: str = backend.name
@@ -115,7 +164,8 @@ class LocalVectorIndex:
     def save(self) -> None:
         self.index_dir.mkdir(parents=True, exist_ok=True)
         meta = {
-            "version": 1,
+            "version": 2,
+            "scope": self.scope,
             "provider": self.backend.name,
             "dim": self.dim,
             "fingerprint": self.fingerprint,
@@ -190,16 +240,16 @@ class LocalVectorIndex:
         max_chunks: int,
         force: bool = False,
     ) -> None:
-        global _DIRTY
         fp = corpus_fingerprint(
             documents, chunk_size=chunk_size, overlap=overlap, max_chunks=max_chunks
         )
-        with _INDEX_LOCK:
-            dirty = _DIRTY or force
+        lock = _lock_for(self.scope)
+        with lock:
+            dirty = _is_dirty(self.scope) or force
             if not dirty and self.chunks and self.fingerprint == fp:
                 return
             if not dirty and self.load() and self.fingerprint == fp:
-                _DIRTY = False
+                _set_dirty(self.scope, False)
                 return
             self.rebuild(
                 documents,
@@ -207,7 +257,7 @@ class LocalVectorIndex:
                 overlap=overlap,
                 max_chunks=max_chunks,
             )
-            _DIRTY = False
+            _set_dirty(self.scope, False)
 
     def search(
         self,
@@ -216,26 +266,32 @@ class LocalVectorIndex:
         top_k: int = 8,
         min_cosine: float = 0.05,
     ) -> list[tuple[float, VectorChunk]]:
-        if not self.chunks:
-            return []
-        q_emb = self.backend.embed_texts([query or ""])[0]
-        scored: list[tuple[float, VectorChunk]] = []
-        for ch in self.chunks:
-            sim = _cosine(q_emb, ch.embedding)
-            if sim >= min_cosine:
-                scored.append((sim, ch))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        # dedupe by doc: keep best chunk
-        best: dict[int, tuple[float, VectorChunk]] = {}
-        for sim, ch in scored:
-            prev = best.get(ch.doc_id)
-            if prev is None or sim > prev[0]:
-                best[ch.doc_id] = (sim, ch)
-        ranked = sorted(best.values(), key=lambda x: x[0], reverse=True)
-        return ranked[: max(1, int(top_k))]
+        # Hold the scope lock across search so a concurrent ensure cannot swap
+        # chunks mid-iteration for the same partition.
+        with _lock_for(self.scope):
+            if not self.chunks:
+                return []
+            q_emb = self.backend.embed_texts([query or ""])[0]
+            scored: list[tuple[float, VectorChunk]] = []
+            for ch in self.chunks:
+                sim = _cosine(q_emb, ch.embedding)
+                if sim >= min_cosine:
+                    scored.append((sim, ch))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            best: dict[int, tuple[float, VectorChunk]] = {}
+            for sim, ch in scored:
+                prev = best.get(ch.doc_id)
+                if prev is None or sim > prev[0]:
+                    best[ch.doc_id] = (sim, ch)
+            ranked = sorted(best.values(), key=lambda x: x[0], reverse=True)
+            return ranked[: max(1, int(top_k))]
 
 
-def build_index_from_settings(settings: Any) -> LocalVectorIndex:
+def build_index_from_settings(
+    settings: Any,
+    *,
+    user_id: int | None = None,
+) -> LocalVectorIndex:
     backend = get_embedding_backend(
         getattr(settings, "rag_embedding_provider", "hash"),
         dim=int(getattr(settings, "rag_embedding_dim", 256)),
@@ -244,5 +300,9 @@ def build_index_from_settings(settings: Any) -> LocalVectorIndex:
         model=getattr(settings, "rag_embedding_model", "") or "text-embedding-3-small",
         timeout=float(getattr(settings, "llm_timeout_seconds", 30.0)),
     )
-    index_dir = default_index_dir(getattr(settings, "rag_vector_index_dir", "") or "")
-    return LocalVectorIndex(index_dir, backend)
+    scope = index_scope_key(user_id)
+    index_dir = default_index_dir(
+        getattr(settings, "rag_vector_index_dir", "") or "",
+        scope=scope,
+    )
+    return LocalVectorIndex(index_dir, backend, scope=scope)

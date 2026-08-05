@@ -180,7 +180,7 @@ async def maybe_extract_faq_after_learn(
         try:
             from app.rag.vector_index import mark_vector_index_dirty
 
-            mark_vector_index_dirty()
+            mark_vector_index_dirty(user_id=user_id)
         except Exception:  # noqa: BLE001
             pass
         result.update(

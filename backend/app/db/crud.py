@@ -130,10 +130,10 @@ async def create_document(
     )
     session.add(doc)
     await session.flush()
-    # P3: any new document invalidates optional local vector index
+    # P3: any new document invalidates optional local vector index (user + shared)
     from app.rag.vector_index import mark_vector_index_dirty
 
-    mark_vector_index_dirty()
+    mark_vector_index_dirty(user_id=user_id)
     try:
         from app.rag.answer_cache import invalidate as invalidate_answer_cache
 
@@ -201,7 +201,8 @@ async def delete_document(
     await session.flush()
     from app.rag.vector_index import mark_vector_index_dirty
 
-    mark_vector_index_dirty()
+    # Prefer the document's owner when present so private indexes are invalidated.
+    mark_vector_index_dirty(user_id=getattr(document, "user_id", None) if user_id is None else user_id)
     try:
         from app.rag.answer_cache import invalidate as invalidate_answer_cache
 

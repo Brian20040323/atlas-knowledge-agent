@@ -1,10 +1,9 @@
 {
   "mcpServers": {
-    "atlas": {
-      "command": "C:\\Users\\czy2004\\Desktop\\AI 全栈开发\\.venv\\Scripts\\python.exe",
-      "args": [
-        "C:\\Users\\czy2004\\Desktop\\AI 全栈开发\\scripts\\mcp_server.py"
-      ]
+    "mcp-knowledge-bridge": {
+      "command": "python",
+      "args": ["-m", "mcp_bridge.server"],
+      "cwd": "C:\\Users\\czy2004\\Desktop\\github-projects\\mcp-knowledge-bridge"
     }
   }
 }

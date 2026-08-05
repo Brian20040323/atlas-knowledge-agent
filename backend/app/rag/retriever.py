@@ -23,6 +23,7 @@ class RetrieverBackend(Protocol):
         max_chunks: int,
         settings: Any | None = None,
         lexical_scorer: Any | None = None,
+        user_id: int | None = None,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -72,8 +73,9 @@ class TfidfHybridRetriever:
         max_chunks: int,
         settings: Any | None = None,
         lexical_scorer: Any | None = None,
+        user_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        del settings  # unused; signature shared with vector backend
+        del settings, user_id  # unused; signature shared with vector backend
         if lexical_scorer is None:
             raise ValueError("lexical_scorer required for TF-IDF retriever")
 
@@ -156,6 +158,7 @@ class VectorHybridRetriever:
         max_chunks: int,
         settings: Any | None = None,
         lexical_scorer: Any | None = None,
+        user_id: int | None = None,
     ) -> list[dict[str, Any]]:
         if lexical_scorer is None:
             raise ValueError("lexical_scorer required for vector retriever")
@@ -163,7 +166,7 @@ class VectorHybridRetriever:
             raise ValueError("settings required for vector retriever")
 
         try:
-            index: LocalVectorIndex = build_index_from_settings(settings)
+            index: LocalVectorIndex = build_index_from_settings(settings, user_id=user_id)
             index.ensure(
                 documents,
                 chunk_size=chunk_size,
@@ -182,6 +185,7 @@ class VectorHybridRetriever:
                 max_chunks=max_chunks,
                 settings=settings,
                 lexical_scorer=lexical_scorer,
+                user_id=user_id,
             )
 
         docs_by_id = {int(d.id): d for d in documents}

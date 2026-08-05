@@ -11,7 +11,10 @@ from app.observability.traces import (
     get_run,
     list_recent_runs,
     new_trace,
+    normalize_graph,
     remember_run,
+    run_payload_to_graph,
+    stages_from_graph,
 )
 
 __all__ = [
@@ -21,7 +24,10 @@ __all__ = [
     "get_run",
     "list_recent_runs",
     "new_trace",
+    "normalize_graph",
     "release_chat_slot",
     "remember_run",
+    "run_payload_to_graph",
+    "stages_from_graph",
     "try_acquire_chat_slot",
 ]

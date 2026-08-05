@@ -110,25 +110,34 @@ async def _warmup_retrieval() -> None:
         from app.config import get_settings
         from app.db import crud
         from app.db.session import get_session_maker
-        from app.rag.vector_index import mark_vector_index_dirty, build_index_from_settings
+        from app.rag.vector_index import (
+            SHARED_SCOPE,
+            build_index_from_settings,
+            mark_vector_index_dirty,
+        )
 
         settings = get_settings()
         if not bool(getattr(settings, "rag_vector_enabled", False)):
             print("RAG: vector hybrid disabled (set RAG_VECTOR_ENABLED=true)")
             return
-        mark_vector_index_dirty()
+        # Auth-on: skip aggregate warmup — each user lazily builds user-{id}.
+        if bool(getattr(settings, "atlas_user_auth", False)):
+            print("RAG: vector hybrid enabled; per-user index loads on first search")
+            return
+        mark_vector_index_dirty(user_id=None)
         session_maker = get_session_maker()
         async with session_maker() as db:
             documents = await crud.list_documents(db, limit=int(settings.rag_scan_limit))
-        index = build_index_from_settings(settings)
-        index.ensure(
+        index = build_index_from_settings(settings, user_id=None)
+        await asyncio.to_thread(
+            index.ensure,
             documents,
             chunk_size=int(settings.rag_chunk_size),
             overlap=int(settings.rag_chunk_overlap),
             max_chunks=int(settings.rag_max_chunks_per_doc),
         )
         print(
-            f"RAG: dense+sparse ready docs={len(documents)} "
+            f"RAG: dense+sparse ready scope={SHARED_SCOPE} docs={len(documents)} "
             f"provider={getattr(settings, 'rag_embedding_provider', 'hash')}"
         )
     except Exception as exc:  # noqa: BLE001

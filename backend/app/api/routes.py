@@ -505,9 +505,16 @@ async def reindex_knowledge(
     user: Optional[User] = Depends(get_current_user),
 ) -> dict:
     """Rebuild local dense vector index (no-op path if vector retrieval disabled)."""
+    import asyncio
+    import logging
+
     from app.db import crud
     from app.db.session import get_session_maker
-    from app.rag.vector_index import mark_vector_index_dirty, build_index_from_settings
+    from app.rag.vector_index import (
+        build_index_from_settings,
+        index_scope_key,
+        mark_vector_index_dirty,
+    )
 
     if not bool(getattr(settings, "rag_vector_enabled", False)):
         return {
@@ -515,24 +522,42 @@ async def reindex_knowledge(
             "reason": "rag_vector_enabled=false",
             "hint": "Set RAG_VECTOR_ENABLED=true then retry",
         }
-    mark_vector_index_dirty()
+
+    uid = _user_scope(user, settings)
+    # Defensive: treat sentinel / invalid ids as shared (auth-off path).
+    index_uid = uid if (uid is not None and int(uid) > 0) else None
+    scope = index_scope_key(index_uid)
+    mark_vector_index_dirty(user_id=index_uid)
     session_maker = get_session_maker()
     async with session_maker() as db:
         documents = await crud.list_documents(
             db,
             limit=int(settings.rag_scan_limit),
-            user_id=_user_scope(user, settings),
+            user_id=uid,
         )
-    index = build_index_from_settings(settings)
-    index.ensure(
-        documents,
-        chunk_size=int(settings.rag_chunk_size),
-        overlap=int(settings.rag_chunk_overlap),
-        max_chunks=int(settings.rag_max_chunks_per_doc),
-    )
+    index = build_index_from_settings(settings, user_id=index_uid)
+    try:
+        # Embedding + JSON I/O are synchronous; keep them off the event loop.
+        await asyncio.to_thread(
+            index.ensure,
+            documents,
+            chunk_size=int(settings.rag_chunk_size),
+            overlap=int(settings.rag_chunk_overlap),
+            max_chunks=int(settings.rag_max_chunks_per_doc),
+            force=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).exception(
+            "vector reindex failed scope=%s docs=%s", scope, len(documents)
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Vector index rebuild unavailable; retry later or check server logs",
+        ) from exc
     return {
         "ok": True,
         "documents": len(documents),
+        "scope": scope,
         "retrieval": "dense+sparse-hybrid",
         "embedding": getattr(settings, "rag_embedding_provider", "hash"),
         "vector_backend": "local-vector-index",
